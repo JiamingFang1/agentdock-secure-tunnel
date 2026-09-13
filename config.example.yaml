@@ -9,4 +9,23 @@ deployment_mode: 'auto'
 tunnel_id: 'TUNNEL_ID_HERE'
 runtime_api_key: 'RUNTIME_API_KEY_HERE'
 agentdock_port: 18765
-workspace_path: 'CHANGE_ME'
+
+# Which workspace becomes AgentDock's default working directory.
+# Change this value, then run `agentdock apply` / `agentdock.cmd apply`.
+default_workspace: 'visionagent'
+
+# Multiple host directories can be mounted into one AgentDock instance.
+# mode: rw = read/write, ro = read-only
+# Windows paths and WSL/Linux/macOS paths are supported.
+workspaces:
+  - name: 'visionagent'
+    path: 'D:\Projects\VisionAgent'
+    mode: 'rw'
+
+  - name: 'linux-project'
+    path: '/home/fangjiaming/project/LinuxProject'
+    mode: 'rw'
+
+  - name: 'docs'
+    path: 'D:\Documents'
+    mode: 'ro'
