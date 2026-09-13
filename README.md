@@ -1,69 +1,133 @@
 # AgentDock Secure Tunnel
 
-Run AgentDock inside an isolated Docker container and connect it to ChatGPT through OpenAI Secure MCP Tunnel.
+让 **AgentDock 运行在隔离的 Docker 容器中**，再通过 **OpenAI Secure MCP Tunnel** 接入 ChatGPT。
 
 ```text
-ChatGPT -> OpenAI Secure MCP Tunnel -> tunnel-client (host) -> AgentDock (Docker) -> mounted workspace
+ChatGPT
+  ↓
+OpenAI Secure MCP Tunnel
+  ↓
+tunnel-client（宿主机）
+  ↓
+127.0.0.1:<port>
+  ↓
+AgentDock（Docker）
+  ↓
+仅挂载指定 workspace
 ```
 
-Supported hosts:
-- Windows 10/11: Docker Desktop, or WSL2 + Docker Engine when Docker Desktop is unavailable
-- macOS: Docker Desktop or Colima
-- Linux: Docker Engine
-- amd64 and arm64
+支持：Windows、macOS、Linux，amd64 / arm64。
 
-`tunnel-client` runs on the host. The OpenAI Runtime API Key is not injected into the AgentDock container.
+> `tunnel-client` 始终运行在宿主机。OpenAI Runtime API Key 不会注入 AgentDock 容器。
 
-## 1. Create an OpenAI Tunnel
+## 1. 创建 OpenAI Tunnel
 
-Open <https://platform.openai.com/settings/organization/tunnels>.
+打开：<https://platform.openai.com/settings/organization/tunnels>
 
-1. Click **Create tunnel**.
-2. Enter a name and description.
-3. Select the Organization / Workspace used by ChatGPT.
-4. Create it and copy the ID beginning with `tunnel_`.
+1. 点击 **Create tunnel**。
+2. 填写名称、描述。
+3. 选择准备在 ChatGPT 中使用的 Organization / Workspace。
+4. 创建后复制 Tunnel ID。
 
-![Tunnel creation UI](docs/images/tunnel-create.svg)
+![Tunnel 创建界面示意](docs/images/tunnel-create.svg)
 
-The local runtime and ChatGPT connector must use the same Tunnel ID.
+本地 `tunnel-client` 与 ChatGPT Connector 必须使用同一个 Tunnel ID。
 
-## 2. Create the Runtime API Key
+## 2. 创建 Runtime API Key
 
-Open <https://platform.openai.com/settings/organization/api-keys>.
+打开：<https://platform.openai.com/settings/organization/api-keys>
 
-Create a **Restricted Runtime API Key** for the long-running `tunnel-client`. The user/role running it needs:
+创建 **Restricted Runtime API Key**。运行 Tunnel 的用户/角色至少需要：
 
 ```text
 Tunnels: Read
 Tunnels: Use
 ```
 
-Do not use an Admin API Key for the long-running tunnel daemon.
+不要给长期运行的 `tunnel-client` 使用 Admin API Key。
 
-![Tunnel permission UI](docs/images/tunnel-permissions.svg)
+![Tunnel 权限界面示意](docs/images/tunnel-permissions.svg)
 
-OpenAI reference: <https://github.com/openai/tunnel-client/blob/master/docs/end-user-guide.md>
+OpenAI 官方说明：<https://github.com/openai/tunnel-client/blob/master/docs/end-user-guide.md>
 
-## 3. Configure
+## 3. 安装前置依赖
+
+需要两个组件：
+
+- Docker Engine + Docker Compose
+- OpenAI `tunnel-client`
+
+`tunnel-client` 下载：<https://github.com/openai/tunnel-client/releases/latest>
+
+选择与你系统匹配的 `runtime-cloudflared` 包，并确保：
+
+```text
+tunnel-client --version
+```
+
+可以直接执行。
+
+### Windows
+
+优先使用 Docker Desktop。如果机器不能安装 Docker Desktop，可以使用：
+
+```text
+Windows PowerShell
+   ↓
+WSL2 Ubuntu / Debian
+   ↓
+Docker Engine
+   ↓
+AgentDock Container
+```
+
+Docker Engine 官方安装：
+
+- Ubuntu: <https://docs.docker.com/engine/install/ubuntu/>
+- Debian: <https://docs.docker.com/engine/install/debian/>
+
+安装后在 Windows PowerShell 验证：
+
+```powershell
+wsl -u root -- docker info
+wsl -u root -- docker compose version
+```
+
+本项目会自动优先检测 Windows Docker；不可用时自动检测 WSL Docker Engine。
+
+### macOS
+
+可以使用 Docker Desktop，也可以使用更轻量的 Colima：
+
+```bash
+brew install docker docker-compose colima
+colima start
+```
+
+### Linux
+
+使用原生 Docker Engine + Compose Plugin。Ubuntu / Debian 可直接参考上面的 Docker 官方安装文档。
+
+## 4. 配置
 
 ```bash
 git clone https://github.com/JiamingFang1/agentdock-secure-tunnel.git
 cd agentdock-secure-tunnel
 ```
 
-Windows:
+Windows：
 
 ```powershell
 Copy-Item config.example.yaml config.yaml
 ```
 
-macOS / Linux:
+macOS / Linux：
 
 ```bash
 cp config.example.yaml config.yaml
 ```
 
-Edit these four values:
+只修改四项：
 
 ```yaml
 tunnel_id: 'TUNNEL_ID_HERE'
@@ -72,7 +136,7 @@ agentdock_port: 18765
 workspace_path: 'D:\Projects\VisionAgent'
 ```
 
-Workspace examples:
+目录示例：
 
 ```text
 Windows : D:\Projects\VisionAgent
@@ -80,51 +144,57 @@ macOS   : /Users/you/Projects/VisionAgent
 Linux   : /home/you/projects/VisionAgent
 ```
 
-`config.yaml` and `.runtime/` are ignored by Git.
+`config.yaml` 与 `.runtime/` 已加入 `.gitignore`，不会提交真实 Key。
 
-## 4. Install
+## 5. 安装
 
-Windows:
+Windows：
 
 ```powershell
 .\agentdock.cmd install
 ```
 
-The Windows installer prefers a working Windows Docker runtime. If unavailable, it can use WSL2 Ubuntu/Debian + Docker Engine.
-
-macOS / Linux:
+macOS / Linux：
 
 ```bash
 ./agentdock install
 ```
 
-On macOS, an existing Docker runtime is used first. If none is found and Homebrew is installed, the script installs Docker CLI + Compose + Colima.
+`install` 会：
 
-On Ubuntu/Debian Linux, Docker Engine can be installed automatically when missing. Other distributions are supported when Docker Engine is already installed.
+- 检查 Docker / Compose；
+- 检查 `tunnel-client`；
+- 生成 AgentDock 本地 Bearer Token；
+- 生成 Docker Compose 与 Tunnel Profile；
+- 拉取官方 AgentDock 镜像。
 
-## 5. Start
+它不会自动修改系统或安装 Docker。
 
-Windows:
+## 6. 启动
+
+Windows：
 
 ```powershell
 .\agentdock.cmd start
 ```
 
-macOS / Linux:
+macOS / Linux：
 
 ```bash
 ./agentdock start
 ```
 
-| Action | Windows | macOS / Linux |
-|---|---|---|
-| Status | `.\agentdock.cmd status` | `./agentdock status` |
-| Logs | `.\agentdock.cmd logs` | `./agentdock logs` |
-| Restart | `.\agentdock.cmd restart` | `./agentdock restart` |
-| Stop | `.\agentdock.cmd stop` | `./agentdock stop` |
-| Update | `.\agentdock.cmd update` | `./agentdock update` |
+常用命令：
 
-Healthy status:
+| 功能 | Windows | macOS / Linux |
+|---|---|---|
+| 状态 | `.\agentdock.cmd status` | `./agentdock status` |
+| 日志 | `.\agentdock.cmd logs` | `./agentdock logs` |
+| 重启 | `.\agentdock.cmd restart` | `./agentdock restart` |
+| 停止 | `.\agentdock.cmd stop` | `./agentdock stop` |
+| 更新 AgentDock 镜像 | `.\agentdock.cmd update` | `./agentdock update` |
+
+正常状态：
 
 ```text
 AgentDock : RUNNING
@@ -132,63 +202,82 @@ Tunnel    : RUNNING
 MCP       : http://127.0.0.1:18765/mcp
 ```
 
-## 6. Add it to ChatGPT
+## 7. ChatGPT 网页端配置
 
-Open <https://chatgpt.com/#settings/Connectors> while AgentDock and `tunnel-client` are running.
+保持 AgentDock 与 `tunnel-client` 运行，然后打开：
 
-1. Set **Connection** to **Tunnel**.
-2. Select the Tunnel you created, or paste its `tunnel_id`.
-3. Do not put the AgentDock local Bearer Token into ChatGPT; this project injects it locally through `tunnel-client`.
-4. If an Authentication selector is shown, use the no-auth option for the connector itself when your workspace allows it. AgentDock's private local authentication is handled between `tunnel-client` and the container.
+<https://chatgpt.com/#settings/Connectors>
 
-![ChatGPT Tunnel connector UI](docs/images/chatgpt-tunnel.svg)
+1. 新建 Custom MCP / App Connection。
+2. **Connection** 选择 **Tunnel**。
+3. 选择刚才创建的 Tunnel，或填写相同的 Tunnel ID。
+4. 不要把 AgentDock 本地 Bearer Token 填进 ChatGPT；它由本机 `tunnel-client` 自动注入。
+5. 如果页面显示 Authentication 选项，并允许无认证 Connector，选择 **None / No authentication**。AgentDock 自己的认证只发生在 `tunnel-client → AgentDock` 这一跳。
 
-If the Tunnel does not appear, check the Workspace scope, Tunnels Read + Use permission, local status, and whether a newly created Tunnel is still propagating.
+![ChatGPT Tunnel Connector 示意](docs/images/chatgpt-tunnel.svg)
 
-## Security model
+如果看不到 Tunnel，优先检查：
+
+- Tunnel 是否绑定正确 Workspace；
+- 当前用户是否具有 **Tunnels Read + Use**；
+- `status` 是否显示 AgentDock 和 Tunnel 都在运行；
+- Tunnel 是否刚创建、仍在同步。
+
+## 安全边界
 
 ```text
-Host
+宿主机
 ├── tunnel-client
 │   └── OpenAI Runtime API Key
-└── Docker container
+│
+└── Docker Container
     ├── AgentDock
-    ├── local AgentDock Bearer Token
-    └── one mounted workspace
+    ├── 本地 AgentDock Bearer Token
+    └── 一个 workspace bind mount
 ```
 
-The container receives the selected workspace, a private AgentDock state volume, and a locally generated AgentDock Bearer Token. It does not receive the OpenAI Runtime API Key.
+AgentDock 容器只得到：
 
-Do not mount your whole home directory, an entire system disk, Docker socket, or unrelated secret directories.
+- `workspace_path`；
+- 独立 AgentDock 状态卷；
+- 自动生成的本地 Bearer Token。
 
-The workspace mount is a host-resource boundary, not a claim that AgentDock can see only one directory inside the container. AgentDock can still access its own container filesystem; host directories that were not mounted are not exposed by default.
+不会得到 OpenAI Runtime API Key。
 
-### Native Linux write permission
+不要挂载：
 
-The official AgentDock container runs as UID/GID `10001`. If it can read but cannot edit a native Linux workspace, grant UID 10001 write access, for example with ACL:
+- 整个用户 Home；
+- 整块系统盘；
+- Docker Socket；
+- 与项目无关的密钥目录。
+
+需要注意：这里限制的是 **AgentDock 能看到哪些宿主机目录**。它仍然可以访问容器自己的 Linux 文件系统。
+
+### Linux 写权限
+
+官方 AgentDock 容器默认使用 UID/GID `10001`。如果 Linux 上只能读不能写 workspace，可使用 ACL 授权：
 
 ```bash
 sudo setfacl -R -m u:10001:rwX /path/to/workspace
 sudo find /path/to/workspace -type d -exec setfacl -m d:u:10001:rwX {} +
 ```
 
-## Project layout
+## 项目结构
 
 ```text
 .
 ├── README.md
 ├── config.example.yaml
-├── agentdock.cmd
-├── agentdock
+├── agentdock.cmd              # Windows 统一入口
+├── agentdock                  # macOS / Linux 统一入口
 ├── scripts/
 │   ├── agentdock.ps1
 │   └── agentdock.sh
 ├── docs/images/
-└── .runtime/
+└── .runtime/                  # 本机自动生成，不提交 Git
 ```
 
-The scripts download the latest public `tunnel-client` runtime build and use `ghcr.io/uvwt/agentdock:latest`.
+上游项目：
 
-Upstream:
-- <https://github.com/uvwt/agentdock>
-- <https://github.com/openai/tunnel-client>
+- AgentDock: <https://github.com/uvwt/agentdock>
+- OpenAI tunnel-client: <https://github.com/openai/tunnel-client>
