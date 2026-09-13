@@ -1,6 +1,8 @@
 # AgentDock Secure Tunnel
 
-让 **AgentDock 运行在隔离的 Docker 容器中**，再通过 **OpenAI Secure MCP Tunnel** 接入 ChatGPT。
+让 **AgentDock** 通过 **OpenAI Secure MCP Tunnel** 接入 ChatGPT。
+
+默认推荐 Docker 隔离：
 
 ```text
 ChatGPT
@@ -9,16 +11,14 @@ OpenAI Secure MCP Tunnel
   ↓
 tunnel-client（宿主机）
   ↓
-127.0.0.1:<port>
-  ↓
 AgentDock（Docker）
   ↓
 仅挂载指定 workspace
 ```
 
-支持：Windows、macOS、Linux，amd64 / arm64。
+也支持直接把 AgentDock 安装到宿主机（native），但 **native 模式没有容器目录隔离**。
 
-> `tunnel-client` 始终运行在宿主机。OpenAI Runtime API Key 不会注入 AgentDock 容器。
+支持 Windows、macOS、Linux，amd64 / arm64。
 
 ## 1. 创建 OpenAI Tunnel
 
@@ -50,65 +50,7 @@ Tunnels: Use
 
 OpenAI 官方说明：<https://github.com/openai/tunnel-client/blob/master/docs/end-user-guide.md>
 
-## 3. 安装前置依赖
-
-需要两个组件：
-
-- Docker Engine + Docker Compose
-- OpenAI `tunnel-client`
-
-`tunnel-client` 下载：<https://github.com/openai/tunnel-client/releases/latest>
-
-选择与你系统匹配的 `runtime-cloudflared` 包，并确保：
-
-```text
-tunnel-client --version
-```
-
-可以直接执行。
-
-### Windows
-
-优先使用 Docker Desktop。如果机器不能安装 Docker Desktop，可以使用：
-
-```text
-Windows PowerShell
-   ↓
-WSL2 Ubuntu / Debian
-   ↓
-Docker Engine
-   ↓
-AgentDock Container
-```
-
-Docker Engine 官方安装：
-
-- Ubuntu: <https://docs.docker.com/engine/install/ubuntu/>
-- Debian: <https://docs.docker.com/engine/install/debian/>
-
-安装后在 Windows PowerShell 验证：
-
-```powershell
-wsl -u root -- docker info
-wsl -u root -- docker compose version
-```
-
-本项目会自动优先检测 Windows Docker；不可用时自动检测 WSL Docker Engine。
-
-### macOS
-
-可以使用 Docker Desktop，也可以使用更轻量的 Colima：
-
-```bash
-brew install docker docker-compose colima
-colima start
-```
-
-### Linux
-
-使用原生 Docker Engine + Compose Plugin。Ubuntu / Debian 可直接参考上面的 Docker 官方安装文档。
-
-## 4. 配置
+## 3. Clone 与配置
 
 ```bash
 git clone https://github.com/JiamingFang1/agentdock-secure-tunnel.git
@@ -127,9 +69,14 @@ macOS / Linux：
 cp config.example.yaml config.yaml
 ```
 
-只修改四项：
+编辑 `config.yaml`：
 
 ```yaml
+# auto   = 优先 Docker；没有 Docker 时询问是否切换 native
+# docker = 强制要求 Docker
+# native = 直接安装 AgentDock 到宿主机
+deployment_mode: 'auto'
+
 tunnel_id: 'TUNNEL_ID_HERE'
 runtime_api_key: 'RUNTIME_API_KEY_HERE'
 agentdock_port: 18765
@@ -146,7 +93,7 @@ Linux   : /home/you/projects/VisionAgent
 
 `config.yaml` 与 `.runtime/` 已加入 `.gitignore`，不会提交真实 Key。
 
-## 5. 安装
+## 4. 安装
 
 Windows：
 
@@ -160,17 +107,108 @@ macOS / Linux：
 ./agentdock install
 ```
 
-`install` 会：
+### install 会自动做什么
 
-- 检查 Docker / Compose；
-- 检查 `tunnel-client`；
-- 生成 AgentDock 本地 Bearer Token；
-- 生成 Docker Compose 与 Tunnel Profile；
-- 拉取官方 AgentDock 镜像。
+- 自动识别 OS / CPU 架构；
+- 自动从 OpenAI 官方 GitHub Release 下载匹配的 `tunnel-client runtime-cloudflared` 到 `.runtime/bin/`；
+- 不要求你提前安装 `tunnel-client`，也不修改系统 PATH；
+- 自动生成 AgentDock 本地 Bearer Token；
+- 根据 `deployment_mode` 选择 Docker 或 native；
+- Docker 模式拉取 `ghcr.io/uvwt/agentdock:latest`；
+- native 模式从 AgentDock 官方 Release 下载对应二进制到 `.runtime/bin/`。
 
-它不会自动修改系统或安装 Docker。
+### 默认推荐 Docker
 
-## 6. 启动
+`deployment_mode: auto` 时：
+
+```text
+检测到 Docker
+  → 使用 Docker
+
+没有 Docker
+  → 提醒推荐安装 Docker Engine
+  → 询问是否继续使用 native
+```
+
+如果你不希望出现询问，可以明确配置：
+
+```yaml
+deployment_mode: 'docker'
+```
+
+或者：
+
+```yaml
+deployment_mode: 'native'
+```
+
+### Docker 如何准备
+
+#### Windows
+
+优先使用 Docker Desktop。
+
+如果机器不能安装 Docker Desktop，可以在 WSL2 Ubuntu / Debian 内安装 Docker Engine：
+
+```text
+Windows PowerShell
+   ↓
+WSL2
+   ↓
+Docker Engine
+   ↓
+AgentDock Container
+```
+
+Docker 官方安装：
+
+- Ubuntu: <https://docs.docker.com/engine/install/ubuntu/>
+- Debian: <https://docs.docker.com/engine/install/debian/>
+
+本项目会自动检测 Windows Docker；不可用时再检测 WSL Docker Engine。
+
+#### macOS
+
+可以使用 Docker Desktop，也可以使用轻量的 Colima：
+
+```bash
+brew install docker docker-compose colima
+colima start
+```
+
+#### Linux
+
+推荐直接安装 Docker Engine + Compose Plugin。
+
+### native 模式的区别
+
+native 模式会直接在宿主机运行 AgentDock：
+
+```text
+ChatGPT
+  ↓
+Secure MCP Tunnel
+  ↓
+tunnel-client（宿主机）
+  ↓
+AgentDock（宿主机）
+```
+
+优点：
+
+- 不需要 Docker；
+- 安装更轻；
+- 可以直接使用宿主机环境。
+
+限制：
+
+> **native 模式没有 Docker 文件系统隔离。**
+
+`workspace_path` 只是 AgentDock 默认工作目录，不是强制访问白名单。AgentDock 仍可能访问当前宿主机用户有权限读取/修改的其他目录。
+
+如果你的目标是“只能访问指定项目”，请使用 Docker 模式。
+
+## 5. 启动
 
 Windows：
 
@@ -188,21 +226,26 @@ macOS / Linux：
 
 | 功能 | Windows | macOS / Linux |
 |---|---|---|
+| 安装 | `.\agentdock.cmd install` | `./agentdock install` |
+| 启动 | `.\agentdock.cmd start` | `./agentdock start` |
 | 状态 | `.\agentdock.cmd status` | `./agentdock status` |
 | 日志 | `.\agentdock.cmd logs` | `./agentdock logs` |
 | 重启 | `.\agentdock.cmd restart` | `./agentdock restart` |
 | 停止 | `.\agentdock.cmd stop` | `./agentdock stop` |
-| 更新 AgentDock 镜像 | `.\agentdock.cmd update` | `./agentdock update` |
+| 更新运行组件 | `.\agentdock.cmd update` | `./agentdock update` |
 
 正常状态：
 
 ```text
 AgentDock : RUNNING
 Tunnel    : RUNNING
+Mode      : docker / native
 MCP       : http://127.0.0.1:18765/mcp
 ```
 
-## 7. ChatGPT 网页端配置
+`tunnel-client` 始终运行在宿主机；OpenAI Runtime API Key 不会注入 Docker AgentDock 容器。
+
+## 6. ChatGPT 网页端配置
 
 保持 AgentDock 与 `tunnel-client` 运行，然后打开：
 
@@ -223,7 +266,7 @@ MCP       : http://127.0.0.1:18765/mcp
 - `status` 是否显示 AgentDock 和 Tunnel 都在运行；
 - Tunnel 是否刚创建、仍在同步。
 
-## 安全边界
+## Docker 模式安全边界
 
 ```text
 宿主机
@@ -236,13 +279,11 @@ MCP       : http://127.0.0.1:18765/mcp
     └── 一个 workspace bind mount
 ```
 
-AgentDock 容器只得到：
+Docker AgentDock 只得到：
 
 - `workspace_path`；
 - 独立 AgentDock 状态卷；
 - 自动生成的本地 Bearer Token。
-
-不会得到 OpenAI Runtime API Key。
 
 不要挂载：
 
@@ -251,9 +292,9 @@ AgentDock 容器只得到：
 - Docker Socket；
 - 与项目无关的密钥目录。
 
-需要注意：这里限制的是 **AgentDock 能看到哪些宿主机目录**。它仍然可以访问容器自己的 Linux 文件系统。
+这里限制的是 **AgentDock 能看到哪些宿主机目录**。它仍然可以访问容器自己的 Linux 文件系统。
 
-### Linux 写权限
+### Linux workspace 写权限
 
 官方 AgentDock 容器默认使用 UID/GID `10001`。如果 Linux 上只能读不能写 workspace，可使用 ACL 授权：
 
@@ -274,7 +315,7 @@ sudo find /path/to/workspace -type d -exec setfacl -m d:u:10001:rwX {} +
 │   ├── agentdock.ps1
 │   └── agentdock.sh
 ├── docs/images/
-└── .runtime/                  # 本机自动生成，不提交 Git
+└── .runtime/                  # 自动下载的二进制、配置、Token、日志，不提交 Git
 ```
 
 上游项目：
