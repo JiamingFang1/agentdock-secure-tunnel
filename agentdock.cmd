@@ -1,2 +1,2 @@
 @echo off
-powershell.exe -NoProfile -File scripts\agentdock.ps1 %*
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows.ps1 %*
