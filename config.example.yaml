@@ -1,5 +1,10 @@
-# Copy this file to config.yaml, then edit these four values.
+# Copy this file to config.yaml and edit the values below.
 # config.yaml is ignored by Git so your Runtime API Key is not committed.
+
+# auto   = prefer Docker; if Docker is unavailable, ask before native install
+# docker = require Docker isolation
+# native = install AgentDock directly on the host (no container isolation)
+deployment_mode: 'auto'
 
 tunnel_id: 'TUNNEL_ID_HERE'
 runtime_api_key: 'RUNTIME_API_KEY_HERE'
