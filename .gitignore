@@ -1,0 +1,4 @@
+config.yaml
+.runtime/
+.DS_Store
+Thumbs.db
