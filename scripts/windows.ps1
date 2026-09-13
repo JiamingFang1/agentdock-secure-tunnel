@@ -43,11 +43,7 @@ function Read-Config {
     foreach ($line in Get-Content $ConfigPath) {
         $trimmed = $line.Trim()
         if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
-
-        if ($trimmed -eq 'workspaces:') {
-            $inWorkspaces = $true
-            continue
-        }
+        if ($trimmed -eq 'workspaces:') { $inWorkspaces = $true; continue }
 
         if (-not $inWorkspaces) {
             if ($trimmed -notmatch '^([A-Za-z0-9_]+)\s*:\s*(.*)$') { Fail "Invalid config line: $line" }
@@ -117,17 +113,20 @@ function Get-Workspace($Config, [string]$Name) {
     if (-not $ws) { Fail "Unknown workspace: $Name" }
     return $ws
 }
+
 function Get-Arch {
     $arch = $env:PROCESSOR_ARCHITECTURE
     if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
     switch ($arch.ToUpperInvariant()) { 'AMD64' { 'amd64' } 'ARM64' { 'arm64' } default { Fail "Unsupported architecture: $arch" } }
 }
+
 function Get-ReleaseAsset([string]$Repo, [string]$Pattern) {
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{'User-Agent'='agentdock-secure-tunnel'}
     $asset = $release.assets | Where-Object { $_.name -match $Pattern } | Select-Object -First 1
     if (-not $asset) { Fail "No matching release asset in ${Repo}: $Pattern" }
     return $asset
 }
+
 function Expand-ZipBinary([string]$Url, [string]$BinaryName, [string]$Destination) {
     New-Item -ItemType Directory -Force $Runtime, $Bin | Out-Null
     $archive = Join-Path $Runtime 'download.zip'; $extract = Join-Path $Runtime 'extract'
@@ -139,27 +138,31 @@ function Expand-ZipBinary([string]$Url, [string]$BinaryName, [string]$Destinatio
     Copy-Item $binary.FullName $Destination -Force
     Remove-Item $archive -Force -ErrorAction SilentlyContinue; Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
 }
+
 function Install-TunnelClient([switch]$Force) {
     if ((Test-Path $TunnelExe) -and -not $Force) { return }
-    $arch = Get-Arch; $asset = Get-ReleaseAsset 'openai/tunnel-client' "^tunnel-client-runtime-cloudflared-v.+-windows-${arch}\.zip$"
-    Write-Host 'Installing OpenAI tunnel-client...'; Expand-ZipBinary $asset.browser_download_url 'tunnel-client.exe' $TunnelExe
+    if (-not (Test-Path $TunnelExe)) { Fail 'tunnel-client is missing. Run scripts\bootstrap-tunnel.ps1 or invoke agentdock.cmd again.' }
 }
+
 function Install-NativeAgentDock([switch]$Force) {
     if ((Test-Path $AgentDockExe) -and -not $Force) { return }
     $arch = Get-Arch; $asset = Get-ReleaseAsset 'uvwt/agentdock' "^agentdock_windows_${arch}\.zip$"
     Write-Host 'Installing AgentDock for native mode...'; Expand-ZipBinary $asset.browser_download_url 'agentdock.exe' $AgentDockExe
     New-Item -ItemType Directory -Force $AgentDockHome | Out-Null
 }
+
 function Test-WindowsDocker {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return $false }
     & docker info *> $null; if ($LASTEXITCODE -ne 0) { return $false }
     & docker compose version *> $null; return ($LASTEXITCODE -eq 0)
 }
+
 function Test-WslDocker {
     if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return $false }
     & wsl.exe -u root -- docker info *> $null; if ($LASTEXITCODE -ne 0) { return $false }
     & wsl.exe -u root -- docker compose version *> $null; return ($LASTEXITCODE -eq 0)
 }
+
 function Select-Deployment($Config) {
     if ($Config.RequestedMode -eq 'native') { return 'native' }
     if ($Config.HasWslWorkspace) {
@@ -176,23 +179,31 @@ function Select-Deployment($Config) {
     if ($answer -match '^(?i:y|yes)$') { return 'native' }
     Fail 'Install/start Docker Engine and retry, or set deployment_mode: native explicitly.'
 }
+
 function New-Token {
     $bytes = New-Object byte[] 32; $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
     try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
     return -join ($bytes | ForEach-Object { $_.ToString('x2') })
 }
+
 function Get-Token {
     New-Item -ItemType Directory -Force $Runtime | Out-Null
     if (Test-Path $TokenPath) { $t=(Get-Content $TokenPath -Raw).Trim(); if($t){return $t} }
     $t=New-Token; Set-Content $TokenPath $t -Encoding ASCII; return $t
 }
+
 function Get-InstalledMode { if(-not(Test-Path $ModePath)){Fail 'Run install first.'}; return (Get-Content $ModePath -Raw).Trim() }
+
 function Convert-ToWslPath([string]$Path) {
     if (Test-WslPath $Path) { return $Path }
-    $result = (& wsl.exe -- wslpath -a -u $Path | Select-Object -First 1)
-    if ($LASTEXITCODE -ne 0 -or -not $result) { Fail "Unable to convert Windows path to WSL path: $Path" }
-    return $result.Trim()
+    if ($Path -match '^([A-Za-z]):[\\/](.*)$') {
+        $drive = $matches[1].ToLowerInvariant()
+        $rest = $matches[2].Replace('\','/')
+        return "/mnt/$drive/$rest"
+    }
+    Fail "Unsupported Windows path for WSL Docker: $Path"
 }
+
 function Write-TunnelProfile($Config, [string]$Token) {
     $text=@"
 config_version: 1
@@ -212,6 +223,7 @@ admin_ui:
 "@
     [IO.File]::WriteAllText($TunnelProfile,$text,(New-Object Text.UTF8Encoding($false)))
 }
+
 function Write-Compose($Config, [string]$Mode, [string]$Token) {
     $defaultDir = "/workspaces/$($Config.DefaultWorkspace)"
     $lines = New-Object System.Collections.Generic.List[string]
@@ -228,6 +240,7 @@ function Write-Compose($Config, [string]$Mode, [string]$Token) {
     $lines.Add('    security_opt:'); $lines.Add('      - no-new-privileges:true'); $lines.Add('volumes:'); $lines.Add('  agentdock_home:')
     [IO.File]::WriteAllLines($Compose,$lines,(New-Object Text.UTF8Encoding($false)))
 }
+
 function Invoke-Compose([Parameter(ValueFromRemainingArguments=$true)][string[]]$ComposeArgs) {
     $mode=Get-InstalledMode
     if($mode -eq 'docker-windows'){ & docker compose -f $Compose @ComposeArgs }
@@ -235,10 +248,12 @@ function Invoke-Compose([Parameter(ValueFromRemainingArguments=$true)][string[]]
     else{ Fail 'Current deployment is not Docker mode.' }
     if($LASTEXITCODE -ne 0){ Fail 'docker compose failed' }
 }
+
 function Test-PidFile([string]$Path) {
     if(-not(Test-Path $Path)){return $false}; $v=(Get-Content $Path -Raw).Trim(); if($v -notmatch '^\d+$'){return $false}
     try{Get-Process -Id([int]$v)-ErrorAction Stop|Out-Null;return $true}catch{return $false}
 }
+
 function Start-Native($Config,[string]$Token) {
     Install-NativeAgentDock
     $defaultWs=Get-Workspace $Config $Config.DefaultWorkspace
@@ -247,34 +262,41 @@ function Start-Native($Config,[string]$Token) {
     $env:AGENTDOCK_HOST='127.0.0.1'; $env:AGENTDOCK_PORT=[string]$Config.Port; $env:AGENTDOCK_HOME=$AgentDockHome; $env:AGENTDOCK_DEFAULT_DIR=$defaultWs.Path; $env:AGENTDOCK_AUTH_TOKEN=$Token; $env:AGENTDOCK_OAUTH_ENABLED='false'
     if(-not(Test-PidFile $NativePid)){ $p=Start-Process -FilePath $AgentDockExe -WindowStyle Hidden -PassThru -RedirectStandardOutput $NativeOut -RedirectStandardError $NativeErr; Set-Content $NativePid $p.Id -Encoding ASCII }
 }
+
 function Start-Tunnel($Config,[string]$Token) {
     $env:CONTROL_PLANE_API_KEY=$Config.RuntimeApiKey; $env:AGENTDOCK_BEARER_HEADER="Bearer $Token"
     if(-not(Test-PidFile $TunnelPid)){ $p=Start-Process -FilePath $TunnelExe -ArgumentList @('run','--profile-file',$TunnelProfile) -WindowStyle Hidden -PassThru -RedirectStandardOutput $TunnelLog; Set-Content $TunnelPid $p.Id -Encoding ASCII; Start-Sleep -Seconds 2; if(-not(Test-PidFile $TunnelPid)){Fail 'tunnel-client failed to start. Run logs.'} }
 }
+
 function Wait-AgentDock([int]$Port) { for($i=0;$i -lt 50;$i++){try{$r=Invoke-WebRequest "http://127.0.0.1:$Port/healthz" -UseBasicParsing -TimeoutSec 2;if($r.StatusCode -eq 200){return}}catch{};Start-Sleep -Milliseconds 500};Fail 'AgentDock health check failed. Run logs.' }
+
 function Install-Command {
     $cfg=Read-Config; New-Item -ItemType Directory -Force $Runtime,$Bin|Out-Null; Install-TunnelClient; $mode=Select-Deployment $cfg; $token=Get-Token; Write-TunnelProfile $cfg $token; Set-Content $ModePath $mode -Encoding ASCII
     if($mode -like 'docker-*'){Write-Compose $cfg $mode $token;Invoke-Compose pull}else{Install-NativeAgentDock;Write-Warning 'Native mode installed. AgentDock is not container-isolated.'}
     Write-Host "Installed. Default workspace: $($cfg.DefaultWorkspace)" -ForegroundColor Green; Write-Host 'Next: .\agentdock.cmd start'
 }
+
 function Start-Command {
     $cfg=Read-Config; Install-TunnelClient; $mode=Get-InstalledMode; $token=Get-Token; Write-TunnelProfile $cfg $token
     if($mode -like 'docker-*'){Write-Compose $cfg $mode $token;Invoke-Compose up -d --force-recreate}else{Start-Native $cfg $token}
     Wait-AgentDock $cfg.Port; Start-Tunnel $cfg $token
     Write-Host 'AgentDock : RUNNING' -ForegroundColor Green; Write-Host 'Tunnel    : RUNNING' -ForegroundColor Green; Write-Host "Mode      : $mode"; Write-Host "Default   : $($cfg.DefaultWorkspace)"; Write-Host "MCP       : http://127.0.0.1:$($cfg.Port)/mcp"
 }
+
 function Stop-Command {
     if(Test-PidFile $TunnelPid){Stop-Process -Id([int](Get-Content $TunnelPid -Raw).Trim()) -Force -ErrorAction SilentlyContinue};Remove-Item $TunnelPid -Force -ErrorAction SilentlyContinue
     if(Test-Path $ModePath){$mode=Get-InstalledMode;if($mode -like 'docker-*'){if(Test-Path $Compose){Invoke-Compose down}}elseif(Test-PidFile $NativePid){Stop-Process -Id([int](Get-Content $NativePid -Raw).Trim()) -Force -ErrorAction SilentlyContinue}}
     Remove-Item $NativePid -Force -ErrorAction SilentlyContinue;Write-Host 'Stopped.'
 }
+
 function Status-Command {
     $cfg=Read-Config;$a='STOPPED';$t='STOPPED';try{$r=Invoke-WebRequest "http://127.0.0.1:$($cfg.Port)/healthz" -UseBasicParsing -TimeoutSec 2;if($r.StatusCode -eq 200){$a='RUNNING'}}catch{};if(Test-PidFile $TunnelPid){$t='RUNNING'};$mode=if(Test-Path $ModePath){Get-InstalledMode}else{'NOT INSTALLED'}
     Write-Host "AgentDock : $a";Write-Host "Tunnel    : $t";Write-Host "Mode      : $mode";Write-Host "Default   : $($cfg.DefaultWorkspace)";Write-Host "MCP       : http://127.0.0.1:$($cfg.Port)/mcp"
 }
+
 function Logs-Command {if(Test-Path $ModePath){$m=Get-InstalledMode;if($m -like 'docker-*' -and (Test-Path $Compose)){Invoke-Compose logs --tail 100 agentdock}};if(Test-Path $NativeOut){Get-Content $NativeOut -Tail 100};if(Test-Path $NativeErr){Get-Content $NativeErr -Tail 100};if(Test-Path $TunnelLog){Get-Content $TunnelLog -Tail 100}}
 function Apply-Command {Stop-Command;Start-Command}
-function Update-Command { $cfg=Read-Config;if(-not(Test-Path $ModePath)){Fail 'Run install first.'};$mode=Get-InstalledMode;if($mode -like 'docker-*'){$token=Get-Token;Write-Compose $cfg $mode $token;Invoke-Compose pull}else{Install-NativeAgentDock -Force};Install-TunnelClient -Force }
+function Update-Command { $cfg=Read-Config;if(-not(Test-Path $ModePath)){Fail 'Run install first.'};$mode=Get-InstalledMode;if($mode -like 'docker-*'){$token=Get-Token;Write-Compose $cfg $mode $token;Invoke-Compose pull}else{Install-NativeAgentDock -Force} }
 
 $Command=if($args.Count -gt 0){[string]$args[0]}else{'help'}
 switch($Command){
