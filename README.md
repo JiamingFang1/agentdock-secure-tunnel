@@ -93,6 +93,30 @@ workspaces:
 .\agentdock.cmd start
 ```
 
+Windows 安装器会自动检测容器运行时：
+
+```text
+Docker Desktop 正常运行
+        ↓
+直接使用 docker-windows
+
+Docker Desktop 已安装但未启动
+        ↓
+选择：启动 Docker Desktop / 使用 WSL Docker / native / 取消
+
+没有可用 Docker Desktop
+        ↓
+检查 WSL Docker
+        ↓
+WSL 有发行版但没有 Docker → 可安装/修复 Docker Engine
+WSL 没有可用发行版        → 可安装 WSL + Ubuntu
+所有 Docker 方案都不用   → 可选择 native，并显示安全风险
+```
+
+> WSL 本身通常 **不自带 Docker Engine**。WSL 中能直接执行 `docker`，常见原因是 Docker Desktop 开启了 WSL integration，或用户之前自行安装过 Docker Engine。
+
+自动安装 Docker Engine 目前支持 Ubuntu / Debian WSL，并使用 Docker 官方 APT 仓库。安装 WSL + Ubuntu 可能需要管理员权限、Windows 重启，以及首次打开 Ubuntu 创建 Linux 用户；完成后重新运行 `\.\agentdock.cmd install` 即可。
+
 ### macOS / Linux
 
 ```bash
@@ -251,8 +275,8 @@ deployment_mode: 'auto'
 可选值：
 
 ```text
-auto    优先 Docker；没有 Docker 时询问是否使用 native
-docker  强制 Docker
+auto    优先 Docker；所有 Docker 方案不可用时可显式确认 native 风险
+docker  强制 Docker，不允许 native fallback
 native  直接宿主机运行 AgentDock
 ```
 
@@ -279,9 +303,9 @@ Host
 
 native 模式没有容器目录隔离，也无法强制执行 `ro/rw` workspace 权限。
 
-> native AgentDock 仍可能访问当前宿主机用户有权限访问的其他目录。
+> Native AgentDock 的 file / shell tools 以当前宿主机用户权限执行，可能读取、修改或删除 `workspaces` 之外的文件。`AGENTDOCK_DEFAULT_DIR` 只是默认工作目录，不是安全 allowlist。
 
-如果需要“只能访问指定目录”，使用 Docker 模式。
+`deployment_mode: auto` 下切换到 native 时，安装器要求输入 `NATIVE` 显式确认风险。如果需要“只能访问指定目录”，使用 Docker 模式。
 
 ## 安装过程会做什么
 
@@ -291,6 +315,7 @@ native 模式没有容器目录隔离，也无法强制执行 `ro/rw` workspace 
 - 下载匹配的 OpenAI `tunnel-client runtime-cloudflared` 到 `.runtime/bin/`；
 - 生成 AgentDock 本地 Bearer Token；
 - 根据 `deployment_mode` 选择 Docker 或 native；
+- Windows 下可启动已有 Docker Desktop，或准备 WSL + Docker Engine；
 - Docker 模式拉取 `ghcr.io/uvwt/agentdock:latest`；
 - native 模式下载 AgentDock 官方二进制到 `.runtime/bin/`。
 
