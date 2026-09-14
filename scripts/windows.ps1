@@ -647,6 +647,13 @@ function Get-WslRuntimeIdentity {
 
 function Get-DockerRuntimeIdentity([string]$Mode) {
     if ($Mode -eq 'docker-wsl') { return Get-WslRuntimeIdentity }
+    if ($Mode -eq 'docker-windows') {
+        # Docker Desktop exposes Windows bind mounts as root-owned inside Linux containers.
+        # AgentDock intentionally chmods AGENTDOCK_DEFAULT_DIR during startup; running as
+        # the image's non-root UID causes EPERM on Windows/NTFS bind mounts. Container root
+        # remains isolated by Docker Desktop and does not grant Windows Administrator access.
+        return [pscustomobject]@{Uid='0';Gid='0'}
+    }
     return [pscustomobject]@{Uid='10001';Gid='10001'}
 }
 
@@ -746,6 +753,12 @@ function Write-Compose($Config,[string]$Mode,[string]$Token) {
         $lines.Add("      - '$source`:$safeRoot/workspaces/$($ws.Name):$($ws.Mode)'")
     }
 
+    if ($Mode -eq 'docker-windows') {
+        # The process runs as UID 0 only to satisfy POSIX chmod semantics on Windows bind mounts.
+        # Drop Linux capabilities and keep no-new-privileges so root stays tightly scoped to the container.
+        $lines.Add('    cap_drop:')
+        $lines.Add('      - ALL')
+    }
     $lines.Add('    security_opt:')
     $lines.Add('      - no-new-privileges:true')
     $lines.Add('volumes:')
