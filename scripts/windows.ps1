@@ -13,6 +13,7 @@ $ModePath = Join-Path $Runtime 'deployment.txt'
 $TunnelPid = Join-Path $Runtime 'tunnel-client.pid'
 $NativePid = Join-Path $Runtime 'agentdock-native.pid'
 $TunnelLog = Join-Path $Runtime 'tunnel-client.log'
+$TunnelErr = Join-Path $Runtime 'tunnel-client.err.log'
 $NativeOut = Join-Path $Runtime 'agentdock-native.out.log'
 $NativeErr = Join-Path $Runtime 'agentdock-native.err.log'
 $TunnelExe = Join-Path $Bin 'tunnel-client.exe'
@@ -31,6 +32,17 @@ function Unquote([string]$Value) {
 
 function Test-WslPath([string]$Path) {
     return $Path.StartsWith('/')
+}
+
+function Get-AutoWorkspaceName([string]$Path) {
+    $trimmed = $Path.Trim().TrimEnd('\','/')
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { Fail "Cannot derive workspace name from path: $Path" }
+    $parts = $trimmed -split '[\\/]'
+    $name = [string]$parts[-1]
+    if ([string]::IsNullOrWhiteSpace($name) -or $name -notmatch '^[A-Za-z0-9._-]+$') {
+        Fail "Cannot use directory name '$name' as a workspace name. Add an explicit name using only letters, numbers, '.', '_' or '-'."
+    }
+    return $name
 }
 
 function Read-Config {
@@ -55,14 +67,30 @@ function Read-Config {
             continue
         }
 
-        if ($s -match '^-\s+name\s*:\s*(.*)$') {
+        if ($s -match '^-\s*(name|path|mode)\s*:\s*(.*)$') {
             if ($null -ne $current) { $items.Add([pscustomobject]$current) }
-            $current = @{ Name=(Unquote $matches[1]); Path=''; Mode='rw' }
+            $current = @{ Name=''; Path=''; Mode='rw' }
+            $key = $matches[1]
+            $value = Unquote $matches[2]
+            switch ($key) {
+                'name' { $current.Name = $value }
+                'path' { $current.Path = $value }
+                'mode' { $current.Mode = $value.ToLowerInvariant() }
+            }
             continue
         }
-        if ($null -eq $current) { Fail "Workspace property before name: $line" }
-        if ($s -match '^path\s*:\s*(.*)$') { $current.Path = Unquote $matches[1]; continue }
-        if ($s -match '^mode\s*:\s*(.*)$') { $current.Mode = (Unquote $matches[1]).ToLowerInvariant(); continue }
+
+        if ($null -eq $current) { Fail "Workspace property before workspace item: $line" }
+        if ($s -match '^(name|path|mode)\s*:\s*(.*)$') {
+            $key = $matches[1]
+            $value = Unquote $matches[2]
+            switch ($key) {
+                'name' { $current.Name = $value }
+                'path' { $current.Path = $value }
+                'mode' { $current.Mode = $value.ToLowerInvariant() }
+            }
+            continue
+        }
         Fail "Invalid workspace line: $line"
     }
 
@@ -88,23 +116,27 @@ function Read-Config {
     $seen = @{}
     $workspaces = New-Object System.Collections.Generic.List[object]
     foreach ($ws in $items) {
-        if ([string]::IsNullOrWhiteSpace($ws.Name) -or $ws.Name -notmatch '^[A-Za-z0-9._-]+$') { Fail "Invalid workspace name: $($ws.Name)" }
-        if ($seen.ContainsKey($ws.Name)) { Fail "Duplicate workspace name: $($ws.Name)" }
-        $seen[$ws.Name] = $true
-        if ([string]::IsNullOrWhiteSpace($ws.Path)) { Fail "Workspace $($ws.Name) has empty path" }
-        if (@('rw','ro') -notcontains $ws.Mode) { Fail "Workspace $($ws.Name) mode must be rw or ro" }
+        if ([string]::IsNullOrWhiteSpace($ws.Path)) { Fail 'Workspace has an empty path' }
+        if (@('rw','ro') -notcontains $ws.Mode) { Fail "Workspace mode must be rw or ro for path: $($ws.Path)" }
+
+        $name = if ([string]::IsNullOrWhiteSpace($ws.Name)) { Get-AutoWorkspaceName $ws.Path } else { [string]$ws.Name }
+        if ($name -notmatch '^[A-Za-z0-9._-]+$') { Fail "Invalid workspace name: $name" }
+        if ($seen.ContainsKey($name)) { Fail "Duplicate workspace name: $name" }
+        $seen[$name] = $true
 
         if (Test-WslPath $ws.Path) {
-            $workspaces.Add([pscustomobject]@{Name=$ws.Name;Path=$ws.Path;Mode=$ws.Mode;PathType='wsl'})
+            $workspaces.Add([pscustomobject]@{Name=$name;Path=$ws.Path;Mode=$ws.Mode;PathType='wsl'})
         } else {
             $p = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ws.Path))
             if (-not (Test-Path $p -PathType Container)) { New-Item -ItemType Directory -Force $p | Out-Null }
-            $workspaces.Add([pscustomobject]@{Name=$ws.Name;Path=$p;Mode=$ws.Mode;PathType='windows'})
+            $workspaces.Add([pscustomobject]@{Name=$name;Path=$p;Mode=$ws.Mode;PathType='windows'})
         }
     }
 
     $defaultName = [string]$top.default_workspace
-    if (-not $seen.ContainsKey($defaultName)) { Fail "default_workspace '$defaultName' is not defined" }
+    if (-not $seen.ContainsKey($defaultName)) {
+        Fail "default_workspace '$defaultName' is not defined. With no explicit name, use the source directory's final name."
+    }
 
     return [pscustomobject]@{
         TunnelId=[string]$top.tunnel_id
@@ -233,6 +265,23 @@ function Convert-ToWslPath([string]$Path) {
     Fail "Unsupported Windows path for WSL Docker: $Path"
 }
 
+function Get-WslRuntimeIdentity {
+    $uidLine = (& wsl.exe -- id -u | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0 -or -not $uidLine) { Fail 'Unable to determine the default WSL user UID.' }
+    $gidLine = (& wsl.exe -- id -g | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0 -or -not $gidLine) { Fail 'Unable to determine the default WSL user GID.' }
+    $uid = $uidLine.Trim()
+    $gid = $gidLine.Trim()
+    if ($uid -notmatch '^\d+$' -or $gid -notmatch '^\d+$') { Fail "Invalid WSL UID/GID: $uid`:$gid" }
+    if ($uid -eq '0') { Fail 'The default WSL user is root. Configure a non-root WSL default user before using Docker isolation.' }
+    return [pscustomobject]@{Uid=$uid;Gid=$gid}
+}
+
+function Get-DockerRuntimeIdentity([string]$Mode) {
+    if ($Mode -eq 'docker-wsl') { return Get-WslRuntimeIdentity }
+    return [pscustomobject]@{Uid='10001';Gid='10001'}
+}
+
 function Write-TunnelProfile($Config,[string]$Token) {
     $text = @"
 config_version: 1
@@ -259,18 +308,52 @@ function Get-DockerSource($Ws,[string]$Mode) {
     return $Ws.Path.Replace('\','/')
 }
 
+function Test-WslWorkspaceAccess($Config,[string]$Mode) {
+    if ($Mode -ne 'docker-wsl') { return }
+    foreach ($ws in $Config.Workspaces) {
+        $source = Get-DockerSource $ws $Mode
+        & wsl.exe -- test -r $source
+        if ($LASTEXITCODE -ne 0) { Fail "WSL user cannot read workspace '$($ws.Name)': $source" }
+        & wsl.exe -- test -x $source
+        if ($LASTEXITCODE -ne 0) { Fail "WSL user cannot enter workspace '$($ws.Name)': $source" }
+        if ($ws.Mode -eq 'rw') {
+            & wsl.exe -- test -w $source
+            if ($LASTEXITCODE -ne 0) { Fail "WSL user cannot write workspace '$($ws.Name)' configured as rw: $source" }
+        }
+    }
+}
+
 function Write-Compose($Config,[string]$Mode,[string]$Token) {
     $safeRoot = '/home/agentdock/AgentDock'
+    $identity = Get-DockerRuntimeIdentity $Mode
+    Test-WslWorkspaceAccess $Config $Mode
     $defaultWs = Get-Workspace $Config $Config.DefaultWorkspace
     $lines = New-Object System.Collections.Generic.List[string]
+
     $lines.Add('services:')
+    $lines.Add('  agentdock-init:')
+    $lines.Add('    image: ghcr.io/uvwt/agentdock:latest')
+    $lines.Add('    user: "0:0"')
+    $lines.Add('    entrypoint: ["/bin/sh", "-c"]')
+    $lines.Add("    command: ['chown -R $($identity.Uid):$($identity.Gid) /home/agentdock/.agentdock /home/agentdock/AgentDock && chmod 700 /home/agentdock/.agentdock /home/agentdock/AgentDock']")
+    $lines.Add('    restart: "no"')
+    $lines.Add('    volumes:')
+    $lines.Add('      - agentdock_home:/home/agentdock/.agentdock')
+    $lines.Add('      - agentdock_root:/home/agentdock/AgentDock')
+
     $lines.Add('  agentdock:')
     $lines.Add('    image: ghcr.io/uvwt/agentdock:latest')
     $lines.Add('    container_name: agentdock-secure-tunnel')
     $lines.Add('    restart: unless-stopped')
+    $lines.Add('    depends_on:')
+    $lines.Add('      agentdock-init:')
+    $lines.Add('        condition: service_completed_successfully')
+    $lines.Add("    user: `"$($identity.Uid):$($identity.Gid)`"")
     $lines.Add('    ports:')
     $lines.Add("      - `"127.0.0.1:$($Config.Port):8765`"")
     $lines.Add('    environment:')
+    $lines.Add('      HOME: "/home/agentdock"')
+    $lines.Add('      AGENTDOCK_HOME: "/home/agentdock/.agentdock"')
     $lines.Add('      AGENTDOCK_HOST: "0.0.0.0"')
     $lines.Add('      AGENTDOCK_PORT: "8765"')
     $lines.Add('      AGENTDOCK_OAUTH_ENABLED: "false"')
@@ -278,6 +361,7 @@ function Write-Compose($Config,[string]$Mode,[string]$Token) {
     $lines.Add("      AGENTDOCK_DEFAULT_DIR: `"$safeRoot`"")
     $lines.Add('    volumes:')
     $lines.Add('      - agentdock_home:/home/agentdock/.agentdock')
+    $lines.Add('      - agentdock_root:/home/agentdock/AgentDock')
 
     $defaultSource = (Get-DockerSource $defaultWs $Mode).Replace("'","''")
     $lines.Add("      - '$defaultSource`:$safeRoot/default:$($defaultWs.Mode)'")
@@ -291,6 +375,7 @@ function Write-Compose($Config,[string]$Mode,[string]$Token) {
     $lines.Add('      - no-new-privileges:true')
     $lines.Add('volumes:')
     $lines.Add('  agentdock_home:')
+    $lines.Add('  agentdock_root:')
     [IO.File]::WriteAllLines($Compose,$lines,(New-Object Text.UTF8Encoding($false)))
 }
 
@@ -340,7 +425,8 @@ function Start-Tunnel($Config,[string]$Token) {
     $env:CONTROL_PLANE_API_KEY = $Config.RuntimeApiKey
     $env:AGENTDOCK_BEARER_HEADER = "Bearer $Token"
     if (-not (Test-PidFile $TunnelPid)) {
-        $p = Start-Process -FilePath $TunnelExe -ArgumentList @('run','--profile-file',$TunnelProfile) -WindowStyle Hidden -PassThru -RedirectStandardOutput $TunnelLog
+        Remove-Item $TunnelLog,$TunnelErr -Force -ErrorAction SilentlyContinue
+        $p = Start-Process -FilePath $TunnelExe -ArgumentList @('run','--profile-file',$TunnelProfile) -WindowStyle Hidden -PassThru -RedirectStandardOutput $TunnelLog -RedirectStandardError $TunnelErr
         Set-Content $TunnelPid $p.Id -Encoding ASCII
         Start-Sleep 2
         if (-not (Test-PidFile $TunnelPid)) { Fail 'tunnel-client failed to start. Run logs.' }
@@ -439,6 +525,7 @@ function Logs-Command {
     if (Test-Path $NativeOut) { Get-Content $NativeOut -Tail 100 }
     if (Test-Path $NativeErr) { Get-Content $NativeErr -Tail 100 }
     if (Test-Path $TunnelLog) { Get-Content $TunnelLog -Tail 100 }
+    if (Test-Path $TunnelErr) { Get-Content $TunnelErr -Tail 100 }
 }
 
 function Apply-Command {
