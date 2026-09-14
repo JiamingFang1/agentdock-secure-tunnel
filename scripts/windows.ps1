@@ -78,8 +78,8 @@ function Read-Config {
             continue
         }
 
-        if ($null -eq $current) { Fail "Workspace property before workspace item: $line" }
         if ($s -match '^(name|path|mode)\s*:\s*(.*)$') {
+            if ($null -eq $current) { Fail "Workspace field without list item: $line" }
             $key = $matches[1]
             $value = Unquote $matches[2]
             switch ($key) {
@@ -89,89 +89,70 @@ function Read-Config {
             }
             continue
         }
-        Fail "Invalid workspace line: $line"
-    }
 
+        Fail "Invalid config line: $line"
+    }
     if ($null -ne $current) { $items.Add([pscustomobject]$current) }
 
-    foreach ($key in @('tunnel_id','runtime_api_key','agentdock_port','default_workspace')) {
-        if (-not $top.ContainsKey($key) -or [string]::IsNullOrWhiteSpace([string]$top[$key])) { Fail "Missing config key: $key" }
+    foreach ($required in @('tunnel_id','runtime_api_key','agentdock_port','default_workspace')) {
+        if (-not $top.ContainsKey($required) -or [string]::IsNullOrWhiteSpace([string]$top[$required])) { Fail "Missing config value: $required" }
     }
-    if ($items.Count -eq 0) { Fail 'At least one workspace is required.' }
 
-    $deployment = if ($top.ContainsKey('deployment_mode')) { ([string]$top.deployment_mode).ToLowerInvariant() } else { 'auto' }
-    if (@('auto','docker','native') -notcontains $deployment) { Fail 'deployment_mode must be auto, docker, or native' }
-    if ($top.tunnel_id -eq 'TUNNEL_ID_HERE') { Fail 'Set tunnel_id in config.yaml' }
-    if ($top.runtime_api_key -eq 'RUNTIME_API_KEY_HERE') { Fail 'Set runtime_api_key in config.yaml' }
+    $requestedMode = if ($top.ContainsKey('deployment_mode')) { ([string]$top['deployment_mode']).ToLowerInvariant() } else { 'auto' }
+    if ($requestedMode -notin @('auto','docker','native')) { Fail 'deployment_mode must be auto, docker or native.' }
+
+    $workspaces = New-Object System.Collections.Generic.List[object]
+    foreach ($item in $items) {
+        if ([string]::IsNullOrWhiteSpace($item.Path)) { Fail 'Each workspace requires path.' }
+        if ([string]::IsNullOrWhiteSpace($item.Name)) { $item.Name = Get-AutoWorkspaceName $item.Path }
+        if ($item.Mode -notin @('rw','ro')) { Fail "Workspace '$($item.Name)' mode must be rw or ro." }
+        $pathType = if (Test-WslPath $item.Path) { 'wsl' } else { 'windows' }
+        $workspaces.Add([pscustomobject]@{Name=$item.Name;Path=$item.Path;Mode=$item.Mode;PathType=$pathType})
+    }
+    if ($workspaces.Count -eq 0) { Fail 'At least one workspace is required.' }
+
+    $default = [string]$top['default_workspace']
+    if (-not ($workspaces | Where-Object {$_.Name -eq $default})) { Fail "default_workspace '$default' does not match any workspace name." }
 
     $port = 0
-    if (-not [int]::TryParse([string]$top.agentdock_port,[ref]$port) -or $port -lt 1 -or $port -gt 65535) { Fail 'Invalid agentdock_port' }
-
-    $seen = @{}
-    $workspaces = New-Object System.Collections.Generic.List[object]
-    foreach ($ws in $items) {
-        if ([string]::IsNullOrWhiteSpace($ws.Path)) { Fail 'Workspace has an empty path' }
-        if (@('rw','ro') -notcontains $ws.Mode) { Fail "Workspace mode must be rw or ro for path: $($ws.Path)" }
-
-        $name = if ([string]::IsNullOrWhiteSpace($ws.Name)) { Get-AutoWorkspaceName $ws.Path } else { [string]$ws.Name }
-        if ($name -notmatch '^[A-Za-z0-9._-]+$') { Fail "Invalid workspace name: $name" }
-        if ($seen.ContainsKey($name)) { Fail "Duplicate workspace name: $name" }
-        $seen[$name] = $true
-
-        if (Test-WslPath $ws.Path) {
-            $workspaces.Add([pscustomobject]@{Name=$name;Path=$ws.Path;Mode=$ws.Mode;PathType='wsl'})
-        } else {
-            $p = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ws.Path))
-            if (-not (Test-Path $p -PathType Container)) { New-Item -ItemType Directory -Force $p | Out-Null }
-            $workspaces.Add([pscustomobject]@{Name=$name;Path=$p;Mode=$ws.Mode;PathType='windows'})
-        }
-    }
-
-    $defaultName = [string]$top.default_workspace
-    if (-not $seen.ContainsKey($defaultName)) {
-        Fail "default_workspace '$defaultName' is not defined. With no explicit name, use the source directory's final name."
-    }
+    if (-not [int]::TryParse([string]$top['agentdock_port'],[ref]$port) -or $port -lt 1 -or $port -gt 65535) { Fail 'agentdock_port must be 1-65535.' }
 
     return [pscustomobject]@{
-        TunnelId=[string]$top.tunnel_id
-        RuntimeApiKey=[string]$top.runtime_api_key
+        TunnelId=[string]$top['tunnel_id']
+        RuntimeApiKey=[string]$top['runtime_api_key']
         Port=$port
-        RequestedMode=$deployment
-        DefaultWorkspace=$defaultName
+        DefaultWorkspace=$default
+        RequestedMode=$requestedMode
         Workspaces=$workspaces
-        HasWslWorkspace=[bool]($workspaces | Where-Object {$_.PathType -eq 'wsl'} | Select-Object -First 1)
+        HasWslWorkspace=[bool]($workspaces | Where-Object {$_.PathType -eq 'wsl'})
     }
 }
 
 function Get-Workspace($Config,[string]$Name) {
     $ws = $Config.Workspaces | Where-Object {$_.Name -eq $Name} | Select-Object -First 1
-    if (-not $ws) { Fail "Unknown workspace: $Name" }
+    if (-not $ws) { Fail "Workspace not found: $Name" }
     return $ws
 }
 
 function Get-Arch {
-    $arch = $env:PROCESSOR_ARCHITECTURE
-    if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
-    switch ($arch.ToUpperInvariant()) {
+    switch ($env:PROCESSOR_ARCHITECTURE.ToUpperInvariant()) {
         'AMD64' { return 'amd64' }
         'ARM64' { return 'arm64' }
-        default { Fail "Unsupported architecture: $arch" }
+        default { Fail "Unsupported Windows architecture: $env:PROCESSOR_ARCHITECTURE" }
     }
 }
 
 function Get-ReleaseAsset([string]$Repo,[string]$Pattern) {
-    $r = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{'User-Agent'='agentdock-secure-tunnel'}
-    $a = $r.assets | Where-Object {$_.name -match $Pattern} | Select-Object -First 1
-    if (-not $a) { Fail "No matching release asset in ${Repo}: $Pattern" }
-    return $a
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{'User-Agent'='agentdock-secure-tunnel'}
+    $asset = $release.assets | Where-Object {$_.name -match $Pattern} | Select-Object -First 1
+    if (-not $asset) { Fail "No release asset matched $Pattern in $Repo" }
+    return $asset
 }
 
 function Expand-ZipBinary([string]$Url,[string]$BinaryName,[string]$Destination) {
-    New-Item -ItemType Directory -Force $Runtime,$Bin | Out-Null
-    $archive = Join-Path $Runtime 'download.zip'
-    $extract = Join-Path $Runtime 'extract'
-    Remove-Item $archive -Force -ErrorAction SilentlyContinue
-    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+    $archive = Join-Path $Runtime ([IO.Path]::GetRandomFileName() + '.zip')
+    $extract = Join-Path $Runtime ([IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Force $extract | Out-Null
     Invoke-WebRequest -Uri $Url -OutFile $archive -UseBasicParsing
     Expand-Archive $archive $extract -Force
     $binary = Get-ChildItem $extract -Recurse -File | Where-Object {$_.Name -eq $BinaryName} | Select-Object -First 1
@@ -182,7 +163,12 @@ function Expand-ZipBinary([string]$Url,[string]$BinaryName,[string]$Destination)
 }
 
 function Install-TunnelClient {
-    if (-not (Test-Path $TunnelExe)) { Fail 'tunnel-client is missing. Run agentdock.cmd again so bootstrap can install it.' }
+    if (Test-Path $TunnelExe) { return }
+    $arch = Get-Arch
+    $asset = Get-ReleaseAsset 'openai/tunnel-client' "^tunnel-client-runtime-cloudflared-v.*-windows-$arch\.zip$"
+    Write-Host "Installing OpenAI tunnel-client from $($asset.name)..."
+    Expand-ZipBinary $asset.browser_download_url 'tunnel-client.exe' $TunnelExe
+    & $TunnelExe --version
 }
 
 function Install-NativeAgentDock([switch]$Force) {
@@ -196,26 +182,67 @@ function Install-NativeAgentDock([switch]$Force) {
 
 function Test-WindowsDocker {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return $false }
-    & docker info *> $null
-    if ($LASTEXITCODE -ne 0) { return $false }
-    & docker compose version *> $null
-    return ($LASTEXITCODE -eq 0)
+    try {
+        & docker info *> $null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        & docker compose version *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+function Get-DockerDesktopPath {
+    $candidates = @(
+        (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Docker\Docker\Docker Desktop.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Docker\Docker Desktop.exe')
+    ) | Where-Object { $_ -and (Test-Path $_) }
+    return ($candidates | Select-Object -First 1)
+}
+
+function Test-DockerDesktopInstalled {
+    return [bool](Get-DockerDesktopPath)
+}
+
+function Start-DockerDesktopAndWait {
+    $desktop = Get-DockerDesktopPath
+    if (-not $desktop) { return $false }
+    Write-Host 'Starting Docker Desktop...'
+    Start-Process -FilePath $desktop | Out-Null
+    for ($i=0; $i -lt 60; $i++) {
+        Start-Sleep -Seconds 2
+        if (Test-WindowsDocker) {
+            Write-Host 'Docker Desktop is ready.' -ForegroundColor Green
+            return $true
+        }
+    }
+    Write-Warning 'Docker Desktop did not become ready.'
+    return $false
 }
 
 function Invoke-WslExitCode([string[]]$WslArgs) {
-    & wsl.exe @WslArgs *> $null
-    return $LASTEXITCODE
+    try {
+        & wsl.exe @WslArgs *> $null
+        return $LASTEXITCODE
+    } catch {
+        return 1
+    }
 }
 
 function Invoke-WslCapture([string[]]$WslArgs) {
-    $output = @(& wsl.exe @WslArgs 2>$null)
-    $code = $LASTEXITCODE
-    if ($code -ne 0) { return $null }
-    foreach ($line in $output) {
-        $value = ([string]$line).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+    try {
+        $output = @(& wsl.exe @WslArgs 2>$null)
+        $code = $LASTEXITCODE
+        if ($code -ne 0) { return $null }
+        foreach ($line in $output) {
+            $value = ([string]$line).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+        }
+        return $null
+    } catch {
+        return $null
     }
-    return $null
 }
 
 function Test-WslDocker {
@@ -226,18 +253,52 @@ function Test-WslDocker {
 
 function Select-Deployment($Config) {
     if ($Config.RequestedMode -eq 'native') { return 'native' }
+
     if ($Config.HasWslWorkspace) {
         if (Test-WslDocker) { return 'docker-wsl' }
         if ($Config.RequestedMode -eq 'docker') { Fail 'WSL workspace paths require Docker Engine inside WSL.' }
     } else {
         if (Test-WindowsDocker) { return 'docker-windows' }
-        if (Test-WslDocker) { return 'docker-wsl' }
-        if ($Config.RequestedMode -eq 'docker') { Fail 'Docker mode requested but no Docker runtime was found.' }
+
+        $desktopInstalled = Test-DockerDesktopInstalled
+        $wslAvailable = [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue)
+
+        if ($desktopInstalled) {
+            Write-Warning 'Docker Desktop is installed, but its Docker engine is not running.'
+            while ($true) {
+                Write-Host ''
+                Write-Host '[1] Start Docker Desktop and use it'
+                if ($wslAvailable) { Write-Host '[2] Use Docker Engine in WSL instead' }
+                Write-Host '[3] Cancel'
+                $choice = Read-Host 'Choose deployment option'
+                switch ($choice) {
+                    '1' {
+                        if (Start-DockerDesktopAndWait) { return 'docker-windows' }
+                        Write-Warning 'Docker Desktop could not be started or did not become ready.'
+                    }
+                    '2' {
+                        if (-not $wslAvailable) { Write-Warning 'WSL is not available on this system.'; continue }
+                        if (Test-WslDocker) { return 'docker-wsl' }
+                        if ($Config.RequestedMode -eq 'docker') { Fail 'WSL is available, but Docker Engine/Compose is not ready inside WSL.' }
+                        Write-Warning 'WSL is available, but Docker Engine/Compose is not ready inside WSL.'
+                        break
+                    }
+                    '3' { Fail 'Installation cancelled.' }
+                    default { Write-Warning 'Enter 1, 2 or 3.' }
+                }
+                if ($choice -eq '2') { break }
+            }
+        } elseif (Test-WslDocker) {
+            return 'docker-wsl'
+        } elseif ($Config.RequestedMode -eq 'docker') {
+            Fail 'Docker mode requested but neither Docker Desktop nor a working WSL Docker Engine is available.'
+        }
     }
-    Write-Warning 'Docker unavailable. Native mode has no container directory isolation.'
+
+    Write-Warning 'Docker isolation is unavailable. Native mode has no container directory isolation.'
     $answer = Read-Host 'Continue with native AgentDock? [y/N]'
     if ($answer -match '^(?i:y|yes)$') { return 'native' }
-    Fail 'Install/start Docker Engine and retry.'
+    Fail 'Install/start Docker Desktop or Docker Engine in WSL, then retry.'
 }
 
 function Assert-ModeAvailable([string]$Mode) {
