@@ -193,12 +193,11 @@ function Test-WindowsDocker {
 }
 
 function Get-DockerDesktopPath {
-    $candidates = @(
-        (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Docker\Docker\Docker Desktop.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Docker\Docker Desktop.exe')
-    ) | Where-Object { $_ -and (Test-Path $_) }
-    return ($candidates | Select-Object -First 1)
+    $candidates = @()
+    if ($env:ProgramFiles) { $candidates += (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe') }
+    if (${env:ProgramFiles(x86)}) { $candidates += (Join-Path ${env:ProgramFiles(x86)} 'Docker\Docker\Docker Desktop.exe') }
+    if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA 'Docker\Docker Desktop.exe') }
+    return ($candidates | Where-Object { Test-Path $_ } | Select-Object -First 1)
 }
 
 function Test-DockerDesktopInstalled {
@@ -223,8 +222,10 @@ function Start-DockerDesktopAndWait {
 
 function Invoke-WslExitCode([string[]]$WslArgs) {
     try {
-        & wsl.exe @WslArgs *> $null
-        return $LASTEXITCODE
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = 'SilentlyContinue'
+        try { & wsl.exe @WslArgs *> $null; return $LASTEXITCODE }
+        finally { $ErrorActionPreference = $old }
     } catch {
         return 1
     }
@@ -232,11 +233,17 @@ function Invoke-WslExitCode([string[]]$WslArgs) {
 
 function Invoke-WslCapture([string[]]$WslArgs) {
     try {
-        $output = @(& wsl.exe @WslArgs 2>$null)
-        $code = $LASTEXITCODE
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = 'SilentlyContinue'
+        try {
+            $output = @(& wsl.exe @WslArgs 2>$null)
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $old
+        }
         if ($code -ne 0) { return $null }
         foreach ($line in $output) {
-            $value = ([string]$line).Trim()
+            $value = ([string]$line).Replace([char]0,'').Trim()
             if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
         }
         return $null
@@ -245,66 +252,350 @@ function Invoke-WslCapture([string[]]$WslArgs) {
     }
 }
 
+function Get-WslDistributions {
+    if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return @() }
+    try {
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = 'SilentlyContinue'
+        try {
+            $output = @(& wsl.exe --list --quiet 2>$null)
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $old
+        }
+        if ($code -ne 0) { return @() }
+        $items = @()
+        foreach ($line in $output) {
+            $value = ([string]$line).Replace([char]0,'').Trim()
+            if (-not [string]::IsNullOrWhiteSpace($value)) { $items += $value }
+        }
+        return @($items)
+    } catch {
+        return @()
+    }
+}
+
+function Test-WslDistributionAvailable {
+    return (@(Get-WslDistributions).Count -gt 0)
+}
+
+function Get-WslDistroId {
+    if (-not (Test-WslDistributionAvailable)) { return $null }
+    return Invoke-WslCapture -WslArgs @('-u','root','--exec','sh','-lc','. /etc/os-release 2>/dev/null || exit 1; printf "%s" "$ID"')
+}
+
 function Test-WslDocker {
     if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return $false }
+    if (-not (Test-WslDistributionAvailable)) { return $false }
     if ((Invoke-WslExitCode -WslArgs @('-u','root','--exec','docker','info')) -ne 0) { return $false }
     return ((Invoke-WslExitCode -WslArgs @('-u','root','--exec','docker','compose','version')) -eq 0)
 }
 
-function Select-Deployment($Config) {
-    if ($Config.RequestedMode -eq 'native') { return 'native' }
+function Start-WslDockerService {
+    if (-not (Test-WslDistributionAvailable)) { return $false }
+    [void](Invoke-WslExitCode -WslArgs @('-u','root','--exec','sh','-lc','if command -v systemctl >/dev/null 2>&1; then systemctl start docker >/dev/null 2>&1 || true; fi; if command -v service >/dev/null 2>&1; then service docker start >/dev/null 2>&1 || true; fi'))
+    Start-Sleep -Seconds 1
+    return (Test-WslDocker)
+}
 
-    if ($Config.HasWslWorkspace) {
-        if (Test-WslDocker) { return 'docker-wsl' }
-        if ($Config.RequestedMode -eq 'docker') { Fail 'WSL workspace paths require Docker Engine inside WSL.' }
+function Install-WslUbuntu {
+    Write-Host ''
+    Write-Host 'WSL + Ubuntu will be installed using the Microsoft-supported wsl --install command.'
+    Write-Host 'Administrator permission is required. Windows may require a restart.'
+    Write-Host 'After installation, launch Ubuntu once and create the Linux user/password before rerunning this installer.'
+    Write-Host ''
+
+    if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
+        Fail 'wsl.exe is not available. On Windows 10 2004+ or Windows 11, open an elevated PowerShell and run: wsl --install -d Ubuntu'
+    }
+
+    $confirm = Read-Host 'Type INSTALL to install WSL + Ubuntu'
+    if ($confirm -cne 'INSTALL') { return $false }
+
+    $arguments = @('--install','-d','Ubuntu','--no-launch')
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    if ($isAdmin) {
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { & wsl.exe @arguments; $code = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $old }
     } else {
-        if (Test-WindowsDocker) { return 'docker-windows' }
-
-        $desktopInstalled = Test-DockerDesktopInstalled
-        $wslAvailable = [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue)
-
-        if ($desktopInstalled) {
-            Write-Warning 'Docker Desktop is installed, but its Docker engine is not running.'
-            while ($true) {
-                Write-Host ''
-                Write-Host '[1] Start Docker Desktop and use it'
-                if ($wslAvailable) { Write-Host '[2] Use Docker Engine in WSL instead' }
-                Write-Host '[3] Cancel'
-                $choice = Read-Host 'Choose deployment option'
-                switch ($choice) {
-                    '1' {
-                        if (Start-DockerDesktopAndWait) { return 'docker-windows' }
-                        Write-Warning 'Docker Desktop could not be started or did not become ready.'
-                    }
-                    '2' {
-                        if (-not $wslAvailable) { Write-Warning 'WSL is not available on this system.'; continue }
-                        if (Test-WslDocker) { return 'docker-wsl' }
-                        if ($Config.RequestedMode -eq 'docker') { Fail 'WSL is available, but Docker Engine/Compose is not ready inside WSL.' }
-                        Write-Warning 'WSL is available, but Docker Engine/Compose is not ready inside WSL.'
-                        break
-                    }
-                    '3' { Fail 'Installation cancelled.' }
-                    default { Write-Warning 'Enter 1, 2 or 3.' }
-                }
-                if ($choice -eq '2') { break }
-            }
-        } elseif (Test-WslDocker) {
-            return 'docker-wsl'
-        } elseif ($Config.RequestedMode -eq 'docker') {
-            Fail 'Docker mode requested but neither Docker Desktop nor a working WSL Docker Engine is available.'
+        Write-Host 'Requesting administrator permission for WSL installation...'
+        try {
+            $p = Start-Process -FilePath 'wsl.exe' -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+            $code = $p.ExitCode
+        } catch {
+            Write-Warning 'Administrator elevation was cancelled or WSL installation could not be started.'
+            return $false
         }
     }
 
-    Write-Warning 'Docker isolation is unavailable. Native mode has no container directory isolation.'
-    $answer = Read-Host 'Continue with native AgentDock? [y/N]'
-    if ($answer -match '^(?i:y|yes)$') { return 'native' }
-    Fail 'Install/start Docker Desktop or Docker Engine in WSL, then retry.'
+    if ($code -ne 0) {
+        Write-Warning "wsl --install exited with code $code."
+        return $false
+    }
+
+    Write-Host ''
+    Write-Host 'WSL/Ubuntu installation command completed.' -ForegroundColor Green
+    Write-Host 'Restart Windows if requested, then launch Ubuntu once and create your Linux username/password.'
+    Write-Host 'After that, run: .\agentdock.cmd install'
+    Fail 'WSL first-run initialization is required before AgentDock can continue.'
+}
+
+function Install-DockerEngineInWsl {
+    if (-not (Test-WslDistributionAvailable)) { return $false }
+    $distroId = (Get-WslDistroId)
+    if ([string]::IsNullOrWhiteSpace($distroId)) {
+        Write-Warning 'Unable to identify the default WSL distribution.'
+        return $false
+    }
+    $distroId = $distroId.ToLowerInvariant()
+    if ($distroId -notin @('ubuntu','debian')) {
+        Write-Warning "Automatic Docker Engine installation currently supports Ubuntu and Debian WSL distributions only. Detected: $distroId"
+        return $false
+    }
+
+    $uid = Invoke-WslCapture -WslArgs @('--exec','id','-u')
+    if ([string]::IsNullOrWhiteSpace($uid) -or $uid -eq '0') {
+        Write-Warning 'The default WSL user is root or the distribution has not completed first-run setup.'
+        Write-Host 'Launch the Linux distribution once, create a normal Linux user, then rerun this installer.'
+        return $false
+    }
+
+    Write-Host ''
+    Write-Warning 'This will install Docker Engine from Docker official APT repository inside WSL.'
+    Write-Warning 'Docker official installation may remove conflicting distro-provided Docker/containerd packages.'
+    $confirm = Read-Host 'Type INSTALL to continue with Docker Engine installation'
+    if ($confirm -cne 'INSTALL') { return $false }
+
+    $script = @'
+set -eu
+. /etc/os-release
+case "$ID" in
+  ubuntu|debian) ;;
+  *) echo "Unsupported distribution: $ID" >&2; exit 42 ;;
+esac
+
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl
+
+# Docker documents these packages as conflicts with the official Docker Engine packages.
+DEBIAN_FRONTEND=noninteractive apt-get remove -y \
+  docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc 2>/dev/null || true
+
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+if [ -z "$codename" ]; then
+  echo "Unable to determine distribution codename" >&2
+  exit 43
+fi
+arch="$(dpkg --print-architecture)"
+cat > /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/$ID
+Suites: $codename
+Components: stable
+Architectures: $arch
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl enable docker >/dev/null 2>&1 || true
+  systemctl start docker >/dev/null 2>&1 || true
+fi
+if command -v service >/dev/null 2>&1; then
+  service docker start >/dev/null 2>&1 || true
+fi
+
+docker info >/dev/null
+docker compose version >/dev/null
+'@
+
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & wsl.exe -u root --exec bash -lc $script
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $old
+    }
+
+    if ($code -ne 0) {
+        Write-Warning "Docker Engine installation in WSL exited with code $code."
+        return $false
+    }
+    if (-not (Test-WslDocker)) {
+        Write-Warning 'Docker Engine was installed but is not ready.'
+        return $false
+    }
+    Write-Host 'Docker Engine in WSL is ready.' -ForegroundColor Green
+    return $true
+}
+
+function Ensure-WslDockerInteractive {
+    if (Test-WslDocker) { return $true }
+    if (Test-WslDistributionAvailable) {
+        if (Start-WslDockerService) {
+            Write-Host 'Docker Engine in WSL is ready.' -ForegroundColor Green
+            return $true
+        }
+
+        Write-Warning 'A WSL Linux distribution is available, but Docker Engine/Compose is not ready.'
+        while ($true) {
+            Write-Host ''
+            Write-Host '[1] Install or repair Docker Engine in WSL (Ubuntu/Debian)'
+            Write-Host '[2] Go back without preparing WSL Docker'
+            Write-Host '[3] Cancel installation'
+            $choice = Read-Host 'Choose WSL option'
+            switch ($choice) {
+                '1' {
+                    if (Install-DockerEngineInWsl) { return $true }
+                    Write-Warning 'WSL Docker could not be prepared.'
+                }
+                '2' { return $false }
+                '3' { Fail 'Installation cancelled.' }
+                default { Write-Warning 'Enter 1, 2 or 3.' }
+            }
+        }
+    }
+
+    Write-Warning 'No usable WSL Linux distribution was found.'
+    Write-Host 'WSL does not normally include Docker Engine by itself; Docker must be installed separately or provided by Docker Desktop integration.'
+    while ($true) {
+        Write-Host ''
+        Write-Host '[1] Install WSL + Ubuntu'
+        Write-Host '[2] Go back without installing WSL'
+        Write-Host '[3] Cancel installation'
+        $choice = Read-Host 'Choose WSL option'
+        switch ($choice) {
+            '1' {
+                if (Install-WslUbuntu) { return $false }
+            }
+            '2' { return $false }
+            '3' { Fail 'Installation cancelled.' }
+            default { Write-Warning 'Enter 1, 2 or 3.' }
+        }
+    }
+}
+
+function Confirm-NativeDeployment($Config) {
+    if ($Config.HasWslWorkspace) {
+        Fail 'Native Windows AgentDock cannot use WSL workspace paths. Configure Windows paths or prepare Docker Engine inside WSL.'
+    }
+    if ($Config.RequestedMode -eq 'docker') {
+        Fail 'deployment_mode is docker, so native fallback is disabled. Prepare Docker Desktop or WSL Docker and retry.'
+    }
+
+    Write-Host ''
+    Write-Warning 'NATIVE MODE SECURITY WARNING'
+    Write-Warning 'Native AgentDock has NO container-level workspace isolation.'
+    Write-Warning 'Its file and shell tools run with the permissions of your Windows user and may access, modify, or delete files outside the configured workspaces.'
+    Write-Warning 'The configured workspace is a default working directory, not a hard security boundary.'
+
+    if ($Config.RequestedMode -eq 'native') {
+        Write-Warning 'deployment_mode is explicitly set to native; continuing with native deployment.'
+        return 'native'
+    }
+
+    $answer = Read-Host 'Type NATIVE to accept this risk and continue, or press Enter to cancel'
+    if ($answer -ceq 'NATIVE') { return 'native' }
+    Fail 'Installation cancelled. Install/start Docker Desktop or configure WSL + Docker Engine, then retry.'
+}
+
+function Select-Deployment($Config) {
+    if ($Config.RequestedMode -eq 'native') { return Confirm-NativeDeployment $Config }
+
+    if ($Config.HasWslWorkspace) {
+        if (Test-WslDocker) { return 'docker-wsl' }
+        if (Start-WslDockerService) { return 'docker-wsl' }
+        Write-Warning 'At least one configured workspace uses a WSL/Linux path, so WSL Docker is required.'
+        if (Ensure-WslDockerInteractive) { return 'docker-wsl' }
+        if ($Config.RequestedMode -eq 'docker') { Fail 'WSL Docker is required but could not be prepared.' }
+        Fail 'Native Windows mode cannot use WSL workspace paths. Prepare WSL Docker and retry.'
+    }
+
+    if (Test-WindowsDocker) { return 'docker-windows' }
+
+    $desktopInstalled = Test-DockerDesktopInstalled
+    if ($desktopInstalled) {
+        Write-Warning 'Docker Desktop is installed, but its Docker engine is not running.'
+        while ($true) {
+            Write-Host ''
+            Write-Host '[1] Start Docker Desktop and use it'
+            Write-Host '[2] Use or prepare Docker Engine in WSL instead'
+            if ($Config.RequestedMode -ne 'docker') { Write-Host '[3] Use native AgentDock (NO container isolation)' }
+            Write-Host '[4] Cancel'
+            $choice = Read-Host 'Choose deployment option'
+            switch ($choice) {
+                '1' {
+                    if (Start-DockerDesktopAndWait) { return 'docker-windows' }
+                    Write-Warning 'Docker Desktop could not be started or did not become ready.'
+                }
+                '2' {
+                    if (Ensure-WslDockerInteractive) { return 'docker-wsl' }
+                    Write-Warning 'WSL Docker is still unavailable.'
+                }
+                '3' {
+                    if ($Config.RequestedMode -eq 'docker') { Write-Warning 'Native mode is disabled because deployment_mode is docker.'; continue }
+                    return Confirm-NativeDeployment $Config
+                }
+                '4' { Fail 'Installation cancelled.' }
+                default { Write-Warning 'Enter 1, 2, 3 or 4.' }
+            }
+        }
+    }
+
+    if (Test-WslDocker) { return 'docker-wsl' }
+    if (Start-WslDockerService) { return 'docker-wsl' }
+
+    Write-Warning 'No working Docker runtime was detected.'
+    while ($true) {
+        Write-Host ''
+        if (Test-WslDistributionAvailable) {
+            Write-Host '[1] Install or prepare Docker Engine in existing WSL'
+        } else {
+            Write-Host '[1] Install WSL + Ubuntu, then install Docker Engine'
+        }
+        if ($Config.RequestedMode -ne 'docker') { Write-Host '[2] Use native AgentDock (NO container isolation)' }
+        Write-Host '[3] Cancel'
+        $choice = Read-Host 'Choose deployment option'
+        switch ($choice) {
+            '1' {
+                if (Ensure-WslDockerInteractive) { return 'docker-wsl' }
+                Write-Warning 'No WSL Docker runtime is available yet.'
+            }
+            '2' {
+                if ($Config.RequestedMode -eq 'docker') { Write-Warning 'Native mode is disabled because deployment_mode is docker.'; continue }
+                return Confirm-NativeDeployment $Config
+            }
+            '3' { Fail 'Installation cancelled.' }
+            default { Write-Warning 'Enter 1, 2 or 3.' }
+        }
+    }
 }
 
 function Assert-ModeAvailable([string]$Mode) {
     switch ($Mode) {
-        'docker-windows' { if (-not (Test-WindowsDocker)) { Fail 'Windows Docker runtime is not available.' } }
-        'docker-wsl' { if (-not (Test-WslDocker)) { Fail 'WSL Docker runtime is not available.' } }
+        'docker-windows' {
+            if (Test-WindowsDocker) { return }
+            if ((Test-DockerDesktopInstalled) -and (Start-DockerDesktopAndWait)) { return }
+            Fail 'Windows Docker runtime is not available. Start Docker Desktop or rerun install to choose WSL Docker.'
+        }
+        'docker-wsl' {
+            if (Test-WslDocker) { return }
+            if (Start-WslDockerService) { return }
+            Fail 'WSL Docker runtime is not available. Rerun install to repair or reinstall Docker Engine in WSL.'
+        }
         'native' { return }
         default { Fail "Unknown installed deployment mode: $Mode" }
     }
@@ -350,7 +641,7 @@ function Get-WslRuntimeIdentity {
         Fail 'Unable to determine the default WSL user UID/GID.'
     }
     if ($uid -notmatch '^\d+$' -or $gid -notmatch '^\d+$') { Fail "Invalid WSL UID/GID: $uid`:$gid" }
-    if ($uid -eq '0') { Fail 'The default WSL user is root. Configure a non-root WSL default user before using Docker isolation.' }
+    if ($uid -eq '0') { Fail 'The default WSL user is root. Launch the WSL distribution once and configure a non-root default user before using Docker isolation.' }
     return [pscustomobject]@{Uid=$uid;Gid=$gid}
 }
 
@@ -577,7 +868,11 @@ function Start-Command {
     Write-Host 'AgentDock : RUNNING' -ForegroundColor Green
     Write-Host 'Tunnel    : RUNNING' -ForegroundColor Green
     Write-Host "Mode      : $mode"
-    Write-Host "Default   : $($cfg.DefaultWorkspace) -> /home/agentdock/AgentDock/workspaces/$($cfg.DefaultWorkspace)"
+    if ($mode -like 'docker-*') {
+        Write-Host "Default   : $($cfg.DefaultWorkspace) -> /home/agentdock/AgentDock/workspaces/$($cfg.DefaultWorkspace)"
+    } else {
+        Write-Host "Default   : $($cfg.DefaultWorkspace)"
+    }
     Write-Host "MCP       : http://127.0.0.1:$($cfg.Port)/mcp"
 }
 
