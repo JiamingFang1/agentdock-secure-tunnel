@@ -1,4 +1,3 @@
-
 # AgentDock Secure Tunnel
 
 让 **AgentDock** 通过 **OpenAI Secure MCP Tunnel** 接入 ChatGPT。
@@ -18,19 +17,19 @@ ChatGPT → Secure MCP Tunnel → tunnel-client（宿主机） → AgentDock（D
 打开：<https://platform.openai.com/settings/organization/tunnels>
 
 1. 点击 **Create tunnel**。
-2. 填写名称、描述。
-3. 选择准备在 ChatGPT 中使用的 Organization / Workspace。
-4. 创建后复制 Tunnel ID。
+2. 填写名称、描述等信息。
+3. 创建完成后复制 Tunnel ID。
+4. 后续本地 `config.yaml` 和 ChatGPT 端必须使用同一个 Tunnel。
 
-![Tunnel 创建界面示意](docs/images/tunnel-create.svg)
-
-本地 `tunnel-client` 与 ChatGPT Connector 必须使用同一个 Tunnel ID。
+![OpenAI Platform 创建 Tunnel](docs/images/image.png)
 
 ## 2. 创建 Runtime API Key
 
 打开：<https://platform.openai.com/settings/organization/api-keys>
 
-创建 **Restricted Runtime API Key**。运行 Tunnel 的用户/角色至少需要：
+为长期运行的 `tunnel-client` 创建 **Restricted Runtime API Key**。
+
+运行 Tunnel 的用户/角色至少需要：
 
 ```text
 Tunnels: Read
@@ -39,7 +38,7 @@ Tunnels: Use
 
 不要给长期运行的 `tunnel-client` 使用 Admin API Key。
 
-![Tunnel 权限界面示意](docs/images/tunnel-permissions.svg)
+![OpenAI Platform Runtime API Key / Tunnel 权限配置](docs/images/image2.png)
 
 OpenAI 官方说明：<https://github.com/openai/tunnel-client/blob/master/docs/end-user-guide.md>
 
@@ -77,52 +76,44 @@ workspaces:
   - path: '/home/fangjiaming/project/VisionAgent'
     mode: 'rw'
 
-  - path: 'E:\work\chatgpt-workspace'
+  - path: 'E:\work\win-chatgpt-workspace'
     mode: 'rw'
 ```
 
 ### workspace 名称规则
 
-默认不需要写 `name`。脚本会自动使用宿主目录最后一级作为 workspace 名称：
+默认不需要写 `name`。
+
+脚本会自动使用宿主目录最后一级作为 workspace 名称：
 
 ```text
 /home/fangjiaming/project/VisionAgent
 → VisionAgent
 
-E:\work\chatgpt-workspace
-→ chatgpt-workspace
+E:\work\win-chatgpt-workspace
+→ win-chatgpt-workspace
 ```
 
-所以上面的配置在容器中对应：
+Docker 模式下对应：
 
 ```text
 /home/agentdock/AgentDock/workspaces/VisionAgent
-/home/agentdock/AgentDock/workspaces/chatgpt-workspace
+/home/agentdock/AgentDock/workspaces/win-chatgpt-workspace
 ```
 
-`default_workspace: 'VisionAgent'` 会额外提供一个稳定入口：
-
-```text
-/home/agentdock/AgentDock/default
-→ 同一个 VisionAgent 宿主目录
-```
-
-只有在你明确希望“容器内名称”和“宿主目录名”不同，或者多个目录最后一级重名时，才需要写 `name`：
+`default_workspace` 填自动推导出的目录名，例如：
 
 ```yaml
-workspaces:
-  - name: 'docs'
-    path: 'D:\Documents'
-    mode: 'ro'
+default_workspace: 'VisionAgent'
 ```
 
-此时容器内路径是：
+则 AgentDock 的真实默认工作目录就是：
 
 ```text
-/home/agentdock/AgentDock/workspaces/docs
+/home/agentdock/AgentDock/workspaces/VisionAgent
 ```
 
-`name` 仅用于容器侧挂载名称，不会创建数据副本。
+旧版配置中的 `name` 仍兼容，但新配置建议省略，直接使用目录最后一级名称。
 
 ### mode
 
@@ -131,18 +122,34 @@ rw = 可读写
 ro = 只读
 ```
 
+默认 workspace 必须使用：
+
+```yaml
+mode: 'rw'
+```
+
+因为 AgentDock 启动时会对默认目录执行自己的权限保护逻辑。
+
 ### Docker 权限模型
 
-Docker 模式会自动处理常见的 Linux/WSL UID/GID 权限问题：
+Docker 模式会自动处理常见的 Linux / WSL UID/GID 权限问题：
 
 - Linux / macOS：AgentDock 使用当前宿主用户的 UID/GID 运行；
 - Windows + WSL Docker：AgentDock 使用默认 WSL 用户的 UID/GID 运行；
 - AgentDock 自己的内部 volume 会由一次性 init 容器自动调整权限；
-- **不会**自动 `chown -R`、`chmod 777` 或修改 workspace 源码目录的 owner/ACL。
+- 不会对所有 workspace 执行 `chown -R` 或 `chmod 777`。
 
-因此普通用户拥有的 `700` 项目目录也可以直接挂载给 AgentDock 使用，不需要安装后再手工修权限。
+Windows + WSL 下，启动前会检查：
 
-如果当前宿主用户自己都无法读写某个配置为 `rw` 的目录，启动会直接给出明确错误，而不是静默失败。
+```text
+WSL Docker 是否可用
+默认 WSL 用户 UID/GID
+workspace 是否可读/可进入
+rw workspace 是否可写
+default_workspace 是否存在并为 rw
+```
+
+如果预检失败，`apply` 不会先停止当前正在运行的服务。
 
 ### Windows + WSL 混合目录
 
@@ -150,20 +157,20 @@ Windows 配置中可以同时写 Windows 原生路径和 WSL 路径：
 
 ```yaml
 workspaces:
-  - path: 'D:\Projects\Code'
+  - path: 'E:\Projects\Code'
     mode: 'rw'
 
   - path: '/home/fangjiaming/project/LinuxProject'
     mode: 'rw'
 ```
 
-如果 Windows 配置中存在 `/home/...` 这类 WSL 路径，Docker 模式会优先要求使用 **WSL Docker Engine**。
+如果配置中存在 `/home/...` 这类 WSL 路径，Docker 模式会使用 **WSL Docker Engine**。
 
 Windows 路径会自动转换：
 
 ```text
-D:\Projects\Code
-→ /mnt/d/Projects/Code
+E:\Projects\Code
+→ /mnt/e/Projects/Code
 ```
 
 WSL 路径保持原样。
@@ -223,23 +230,28 @@ macOS / Linux：
 ./agentdock start
 ```
 
-Docker 模式内部结构：
+Docker 模式内部结构示例：
 
 ```text
-/home/agentdock/AgentDock/                  # AgentDock 内部安全根目录
-├── default                                 # default_workspace 的稳定入口
+/home/agentdock/AgentDock/
 └── workspaces/
-    ├── VisionAgent                         # 自动取源目录最后一级
-    └── chatgpt-workspace                   # 自动取源目录最后一级
+    ├── VisionAgent
+    └── win-chatgpt-workspace
 ```
 
-AgentDock 的 `AGENTDOCK_DEFAULT_DIR` 保持为容器内部安全目录：
+如果配置：
+
+```yaml
+default_workspace: 'VisionAgent'
+```
+
+则：
 
 ```text
-/home/agentdock/AgentDock
+AGENTDOCK_DEFAULT_DIR=/home/agentdock/AgentDock/workspaces/VisionAgent
 ```
 
-这样 AgentDock 启动时的私有目录权限检查不会去 `chmod` 宿主机 bind mount 根目录。
+也就是说 AgentDock 启动后的默认工作目录就是配置指定的 workspace，不再额外创建 `/default` 挂载。
 
 ### 修改配置后立即生效
 
@@ -257,7 +269,7 @@ macOS / Linux：
 ./agentdock apply
 ```
 
-`apply` 会重新读取 `config.yaml`、重新生成容器挂载并重启 AgentDock 和 Tunnel。
+`apply` 会先检查新配置是否可用；预检通过后，再重新生成容器配置并重启 AgentDock 和 Tunnel。
 
 常用命令：
 
@@ -278,23 +290,23 @@ macOS / Linux：
 AgentDock : RUNNING
 Tunnel    : RUNNING
 Mode      : docker-wsl
-Default   : VisionAgent -> /home/agentdock/AgentDock/default
+Default   : VisionAgent -> /home/agentdock/AgentDock/workspaces/VisionAgent
 MCP       : http://127.0.0.1:18765/mcp
 ```
 
+`start` / `apply` 使用 Docker 后台模式启动，正常完成后会直接返回终端，不需要再手工选择 `d Detach`。
+
 ## 6. ChatGPT 网页端配置
 
-保持 AgentDock 与 `tunnel-client` 运行，然后打开：
-
-<https://chatgpt.com/#settings/Connectors>
+保持 AgentDock 与 `tunnel-client` 运行，然后在 ChatGPT 网页端打开 **Settings → Apps / Connectors**（具体名称可能随 UI 版本变化）。
 
 1. 新建 Custom MCP / App Connection。
 2. **Connection** 选择 **Tunnel**。
-3. 选择刚才创建的 Tunnel，或填写相同 Tunnel ID。
-4. 不要把 AgentDock 本地 Bearer Token 填进 ChatGPT；它由本机 `tunnel-client` 自动注入。
-5. 如果页面显示 Authentication 选项，并允许无认证 Connector，选择 **None / No authentication**。
+3. 选择前面在 OpenAI Platform 创建的同一个 Tunnel。
+4. 不要把 AgentDock 本地 Bearer Token 填进 ChatGPT；它由本机 `tunnel-client` 自动注入到 AgentDock 请求。
+5. 保存后让 ChatGPT 扫描并加载 AgentDock 暴露的 MCP tools。
 
-![ChatGPT Tunnel Connector 示意](docs/images/chatgpt-tunnel.svg)
+![ChatGPT 网页端 Tunnel / MCP App 配置](docs/images/image3.png)
 
 ## Docker 与 native 的安全区别
 
@@ -304,8 +316,11 @@ MCP       : http://127.0.0.1:18765/mcp
 
 ```text
 Host
-├── /home/.../VisionAgent   → /home/agentdock/AgentDock/workspaces/VisionAgent
-└── D:\work\chatgpt-workspace → /home/agentdock/AgentDock/workspaces/chatgpt-workspace
+├── /home/.../VisionAgent
+│   → /home/agentdock/AgentDock/workspaces/VisionAgent
+│
+└── E:\work\win-chatgpt-workspace
+    → /home/agentdock/AgentDock/workspaces/win-chatgpt-workspace
 ```
 
 未挂载的宿主机目录不会因为本项目配置自动暴露给 AgentDock。
