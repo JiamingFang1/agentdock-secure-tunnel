@@ -328,6 +328,8 @@ function Write-Compose($Config,[string]$Mode,[string]$Token) {
     $identity = Get-DockerRuntimeIdentity $Mode
     Test-WslWorkspaceAccess $Config $Mode
     $defaultWs = Get-Workspace $Config $Config.DefaultWorkspace
+    if ($defaultWs.Mode -ne 'rw') { Fail "default_workspace '$($Config.DefaultWorkspace)' must use mode: rw because AgentDock secures its default directory at startup." }
+    $defaultDir = "$safeRoot/workspaces/$($Config.DefaultWorkspace)"
     $lines = New-Object System.Collections.Generic.List[string]
 
     $lines.Add('services:')
@@ -358,13 +360,10 @@ function Write-Compose($Config,[string]$Mode,[string]$Token) {
     $lines.Add('      AGENTDOCK_PORT: "8765"')
     $lines.Add('      AGENTDOCK_OAUTH_ENABLED: "false"')
     $lines.Add("      AGENTDOCK_AUTH_TOKEN: `"$Token`"")
-    $lines.Add("      AGENTDOCK_DEFAULT_DIR: `"$safeRoot`"")
+    $lines.Add("      AGENTDOCK_DEFAULT_DIR: `"$defaultDir`"")
     $lines.Add('    volumes:')
     $lines.Add('      - agentdock_home:/home/agentdock/.agentdock')
     $lines.Add('      - agentdock_root:/home/agentdock/AgentDock')
-
-    $defaultSource = (Get-DockerSource $defaultWs $Mode).Replace("'","''")
-    $lines.Add("      - '$defaultSource`:$safeRoot/default:$($defaultWs.Mode)'")
 
     foreach ($ws in $Config.Workspaces) {
         $source = (Get-DockerSource $ws $Mode).Replace("'","''")
@@ -379,7 +378,7 @@ function Write-Compose($Config,[string]$Mode,[string]$Token) {
     [IO.File]::WriteAllLines($Compose,$lines,(New-Object Text.UTF8Encoding($false)))
 }
 
-function Invoke-Compose([Parameter(ValueFromRemainingArguments=$true)][string[]]$ComposeArgs) {
+function Invoke-Compose([string[]]$ComposeArgs) {
     $mode = Get-InstalledMode
     if ($mode -eq 'docker-windows') {
         & docker compose -f $Compose @ComposeArgs
@@ -454,7 +453,7 @@ function Install-Command {
     Set-Content $ModePath $mode -Encoding ASCII
     if ($mode -like 'docker-*') {
         Write-Compose $cfg $mode $token
-        Invoke-Compose pull
+        Invoke-Compose -ComposeArgs @('pull')
     } else {
         Install-NativeAgentDock
     }
@@ -470,7 +469,7 @@ function Start-Command {
     Write-TunnelProfile $cfg $token
     if ($mode -like 'docker-*') {
         Write-Compose $cfg $mode $token
-        Invoke-Compose up -d --force-recreate
+        Invoke-Compose -ComposeArgs @('up','-d','--force-recreate')
     } else {
         Start-Native $cfg $token
     }
@@ -479,7 +478,7 @@ function Start-Command {
     Write-Host 'AgentDock : RUNNING' -ForegroundColor Green
     Write-Host 'Tunnel    : RUNNING' -ForegroundColor Green
     Write-Host "Mode      : $mode"
-    Write-Host "Default   : $($cfg.DefaultWorkspace) -> /home/agentdock/AgentDock/default"
+    Write-Host "Default   : $($cfg.DefaultWorkspace) -> /home/agentdock/AgentDock/workspaces/$($cfg.DefaultWorkspace)"
     Write-Host "MCP       : http://127.0.0.1:$($cfg.Port)/mcp"
 }
 
@@ -491,7 +490,7 @@ function Stop-Command {
     if (Test-Path $ModePath) {
         $mode = Get-InstalledMode
         if ($mode -like 'docker-*') {
-            if (Test-Path $Compose) { Invoke-Compose down }
+            if (Test-Path $Compose) { Invoke-Compose -ComposeArgs @('down') }
         } elseif (Test-PidFile $NativePid) {
             Stop-Process -Id ([int](Get-Content $NativePid -Raw).Trim()) -Force -ErrorAction SilentlyContinue
         }
@@ -520,7 +519,7 @@ function Status-Command {
 function Logs-Command {
     if (Test-Path $ModePath) {
         $m = Get-InstalledMode
-        if ($m -like 'docker-*' -and (Test-Path $Compose)) { Invoke-Compose logs --tail 100 agentdock }
+        if ($m -like 'docker-*' -and (Test-Path $Compose)) { Invoke-Compose -ComposeArgs @('logs','--tail','100','agentdock') }
     }
     if (Test-Path $NativeOut) { Get-Content $NativeOut -Tail 100 }
     if (Test-Path $NativeErr) { Get-Content $NativeErr -Tail 100 }
@@ -540,7 +539,7 @@ function Update-Command {
     if ($mode -like 'docker-*') {
         $token = Get-Token
         Write-Compose $cfg $mode $token
-        Invoke-Compose pull
+        Invoke-Compose -ComposeArgs @('pull')
     } else {
         Install-NativeAgentDock -Force
     }
