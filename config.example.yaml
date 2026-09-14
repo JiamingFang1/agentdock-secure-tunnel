@@ -10,25 +10,18 @@ tunnel_id: 'TUNNEL_ID_HERE'
 runtime_api_key: 'RUNTIME_API_KEY_HERE'
 agentdock_port: 18765
 
-# Workspace names default to the final directory name in each path.
+# Workspace names are derived automatically from the final directory name.
 # /home/user/project/VisionAgent -> VisionAgent
 # D:\work\chatgpt-workspace      -> chatgpt-workspace
-# default_workspace selects that derived name.
+# default_workspace selects one of those derived names.
 default_workspace: 'VisionAgent'
 
 # Multiple host directories can be mounted into one AgentDock instance.
 # mode: rw = read/write, ro = read-only
 # Windows paths and WSL/Linux/macOS paths are supported.
-# `name` is optional. Only set it when you intentionally want a container-side
-# name different from the source directory's final path component.
 workspaces:
   - path: '/home/user/project/VisionAgent'
     mode: 'rw'
 
   - path: 'D:\work\chatgpt-workspace'
     mode: 'rw'
-
-  # Optional explicit override example:
-  # - name: 'docs'
-  #   path: 'D:\Documents'
-  #   mode: 'ro'
