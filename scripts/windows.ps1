@@ -202,12 +202,26 @@ function Test-WindowsDocker {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Invoke-WslExitCode([string[]]$WslArgs) {
+    & wsl.exe @WslArgs *> $null
+    return $LASTEXITCODE
+}
+
+function Invoke-WslCapture([string[]]$WslArgs) {
+    $output = @(& wsl.exe @WslArgs 2>$null)
+    $code = $LASTEXITCODE
+    if ($code -ne 0) { return $null }
+    foreach ($line in $output) {
+        $value = ([string]$line).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+    }
+    return $null
+}
+
 function Test-WslDocker {
     if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return $false }
-    & wsl.exe -u root --exec docker info *> $null
-    if ($LASTEXITCODE -ne 0) { return $false }
-    & wsl.exe -u root --exec docker compose version *> $null
-    return ($LASTEXITCODE -eq 0)
+    if ((Invoke-WslExitCode -WslArgs @('-u','root','--exec','docker','info')) -ne 0) { return $false }
+    return ((Invoke-WslExitCode -WslArgs @('-u','root','--exec','docker','compose','version')) -eq 0)
 }
 
 function Select-Deployment($Config) {
@@ -224,6 +238,15 @@ function Select-Deployment($Config) {
     $answer = Read-Host 'Continue with native AgentDock? [y/N]'
     if ($answer -match '^(?i:y|yes)$') { return 'native' }
     Fail 'Install/start Docker Engine and retry.'
+}
+
+function Assert-ModeAvailable([string]$Mode) {
+    switch ($Mode) {
+        'docker-windows' { if (-not (Test-WindowsDocker)) { Fail 'Windows Docker runtime is not available.' } }
+        'docker-wsl' { if (-not (Test-WslDocker)) { Fail 'WSL Docker runtime is not available.' } }
+        'native' { return }
+        default { Fail "Unknown installed deployment mode: $Mode" }
+    }
 }
 
 function New-Token {
@@ -260,12 +283,12 @@ function Convert-ToWslPath([string]$Path) {
 }
 
 function Get-WslRuntimeIdentity {
-    $identityLine = (& wsl.exe --exec sh -lc 'printf "%s:%s\n" "$(id -u)" "$(id -g)"' | Select-Object -First 1)
-    if ($LASTEXITCODE -ne 0 -or -not $identityLine) { Fail 'Unable to determine the default WSL user UID/GID.' }
-    $identity = $identityLine.Trim()
-    if ($identity -notmatch '^(\d+):(\d+)$') { Fail "Invalid WSL UID/GID: $identity" }
-    $uid = $matches[1]
-    $gid = $matches[2]
+    $uid = Invoke-WslCapture -WslArgs @('--exec','id','-u')
+    $gid = Invoke-WslCapture -WslArgs @('--exec','id','-g')
+    if ([string]::IsNullOrWhiteSpace($uid) -or [string]::IsNullOrWhiteSpace($gid)) {
+        Fail 'Unable to determine the default WSL user UID/GID.'
+    }
+    if ($uid -notmatch '^\d+$' -or $gid -notmatch '^\d+$') { Fail "Invalid WSL UID/GID: $uid`:$gid" }
     if ($uid -eq '0') { Fail 'The default WSL user is root. Configure a non-root WSL default user before using Docker isolation.' }
     return [pscustomobject]@{Uid=$uid;Gid=$gid}
 }
@@ -301,27 +324,35 @@ function Get-DockerSource($Ws,[string]$Mode) {
     return $Ws.Path.Replace('\','/')
 }
 
+function Test-WslCondition([string]$Flag,[string]$Path) {
+    return ((Invoke-WslExitCode -WslArgs @('--exec','test',$Flag,$Path)) -eq 0)
+}
+
 function Test-WslWorkspaceAccess($Config,[string]$Mode) {
     if ($Mode -ne 'docker-wsl') { return }
     foreach ($ws in $Config.Workspaces) {
         $source = Get-DockerSource $ws $Mode
-        & wsl.exe --exec test -r $source
-        if ($LASTEXITCODE -ne 0) { Fail "WSL user cannot read workspace '$($ws.Name)': $source" }
-        & wsl.exe --exec test -x $source
-        if ($LASTEXITCODE -ne 0) { Fail "WSL user cannot enter workspace '$($ws.Name)': $source" }
-        if ($ws.Mode -eq 'rw') {
-            & wsl.exe --exec test -w $source
-            if ($LASTEXITCODE -ne 0) { Fail "WSL user cannot write workspace '$($ws.Name)' configured as rw: $source" }
+        if (-not (Test-WslCondition '-r' $source)) { Fail "WSL user cannot read workspace '$($ws.Name)': $source" }
+        if (-not (Test-WslCondition '-x' $source)) { Fail "WSL user cannot enter workspace '$($ws.Name)': $source" }
+        if ($ws.Mode -eq 'rw' -and -not (Test-WslCondition '-w' $source)) {
+            Fail "WSL user cannot write workspace '$($ws.Name)' configured as rw: $source"
         }
     }
 }
 
-function Write-Compose($Config,[string]$Mode,[string]$Token) {
-    $safeRoot = '/home/agentdock/AgentDock'
-    $identity = Get-DockerRuntimeIdentity $Mode
+function Assert-DockerConfig($Config,[string]$Mode) {
+    [void](Get-DockerRuntimeIdentity $Mode)
     Test-WslWorkspaceAccess $Config $Mode
     $defaultWs = Get-Workspace $Config $Config.DefaultWorkspace
-    if ($defaultWs.Mode -ne 'rw') { Fail "default_workspace '$($Config.DefaultWorkspace)' must use mode: rw because AgentDock secures its default directory at startup." }
+    if ($defaultWs.Mode -ne 'rw') {
+        Fail "default_workspace '$($Config.DefaultWorkspace)' must use mode: rw because AgentDock secures its default directory at startup."
+    }
+}
+
+function Write-Compose($Config,[string]$Mode,[string]$Token) {
+    Assert-DockerConfig $Config $Mode
+    $safeRoot = '/home/agentdock/AgentDock'
+    $identity = Get-DockerRuntimeIdentity $Mode
     $defaultDir = "$safeRoot/workspaces/$($Config.DefaultWorkspace)"
     $lines = New-Object System.Collections.Generic.List[string]
 
@@ -377,7 +408,8 @@ function Invoke-Compose([string[]]$ComposeArgs) {
         & docker compose -f $Compose @ComposeArgs
     } elseif ($mode -eq 'docker-wsl') {
         $cp = Convert-ToWslPath $Compose
-        & wsl.exe -u root --exec docker compose -f $cp @ComposeArgs
+        $wslArgs = @('-u','root','--exec','docker','compose','-f',$cp) + $ComposeArgs
+        & wsl.exe @wslArgs
     } else {
         Fail 'Current deployment is not Docker mode.'
     }
@@ -426,40 +458,59 @@ function Start-Tunnel($Config,[string]$Token) {
 function Wait-AgentDock([int]$Port) {
     for ($i=0; $i -lt 50; $i++) {
         try {
-            $r=Invoke-WebRequest "http://127.0.0.1:$Port/healthz" -UseBasicParsing -TimeoutSec 2
-            if($r.StatusCode -eq 200){return}
+            $r = Invoke-WebRequest "http://127.0.0.1:$Port/healthz" -UseBasicParsing -TimeoutSec 2
+            if ($r.StatusCode -eq 200) { return }
         } catch {}
         Start-Sleep -Milliseconds 500
     }
     Fail 'AgentDock health check failed. Run logs.'
 }
 
-function Install-Command {
-    $cfg=Read-Config
-    New-Item -ItemType Directory -Force $Runtime,$Bin|Out-Null
+function Test-StartPreflight {
+    $cfg = Read-Config
     Install-TunnelClient
-    $mode=Select-Deployment $cfg
-    $token=Get-Token
+    $mode = Get-InstalledMode
+    Assert-ModeAvailable $mode
+    if ($mode -like 'docker-*') {
+        Assert-DockerConfig $cfg $mode
+    } else {
+        $ws = Get-Workspace $cfg $cfg.DefaultWorkspace
+        if ($ws.PathType -eq 'wsl') { Fail 'Native Windows AgentDock cannot use a WSL default workspace.' }
+    }
+}
+
+function Install-Command {
+    $cfg = Read-Config
+    New-Item -ItemType Directory -Force $Runtime,$Bin | Out-Null
+    Install-TunnelClient
+    $mode = Select-Deployment $cfg
+    $token = Get-Token
     Write-TunnelProfile $cfg $token
     Set-Content $ModePath $mode -Encoding ASCII
-    if($mode -like 'docker-*'){
+    if ($mode -like 'docker-*') {
+        Assert-ModeAvailable $mode
         Write-Compose $cfg $mode $token
         Invoke-Compose -ComposeArgs @('pull')
-    } else { Install-NativeAgentDock }
+    } else {
+        Install-NativeAgentDock
+    }
     Write-Host "Installed. Default workspace: $($cfg.DefaultWorkspace)" -ForegroundColor Green
     Write-Host 'Next: .\agentdock.cmd start'
 }
 
 function Start-Command {
-    $cfg=Read-Config
+    $cfg = Read-Config
     Install-TunnelClient
-    $mode=Get-InstalledMode
-    $token=Get-Token
+    $mode = Get-InstalledMode
+    Assert-ModeAvailable $mode
+    $token = Get-Token
     Write-TunnelProfile $cfg $token
-    if($mode -like 'docker-*'){
+    if ($mode -like 'docker-*') {
         Write-Compose $cfg $mode $token
         Invoke-Compose -ComposeArgs @('up','-d','--force-recreate')
-    } else { Start-Native $cfg $token }
+    } else {
+        Start-Native $cfg $token
+    }
     Wait-AgentDock $cfg.Port
     Start-Tunnel $cfg $token
     Write-Host 'AgentDock : RUNNING' -ForegroundColor Green
@@ -470,14 +521,16 @@ function Start-Command {
 }
 
 function Stop-Command {
-    if(Test-PidFile $TunnelPid){Stop-Process -Id([int](Get-Content $TunnelPid -Raw).Trim()) -Force -ErrorAction SilentlyContinue}
+    if (Test-PidFile $TunnelPid) {
+        Stop-Process -Id ([int](Get-Content $TunnelPid -Raw).Trim()) -Force -ErrorAction SilentlyContinue
+    }
     Remove-Item $TunnelPid -Force -ErrorAction SilentlyContinue
-    if(Test-Path $ModePath){
-        $mode=Get-InstalledMode
-        if($mode -like 'docker-*'){
-            if(Test-Path $Compose){Invoke-Compose -ComposeArgs @('down')}
-        } elseif(Test-PidFile $NativePid){
-            Stop-Process -Id([int](Get-Content $NativePid -Raw).Trim()) -Force -ErrorAction SilentlyContinue
+    if (Test-Path $ModePath) {
+        $mode = Get-InstalledMode
+        if ($mode -like 'docker-*') {
+            if (Test-Path $Compose) { Invoke-Compose -ComposeArgs @('down') }
+        } elseif (Test-PidFile $NativePid) {
+            Stop-Process -Id ([int](Get-Content $NativePid -Raw).Trim()) -Force -ErrorAction SilentlyContinue
         }
     }
     Remove-Item $NativePid -Force -ErrorAction SilentlyContinue
@@ -485,43 +538,62 @@ function Stop-Command {
 }
 
 function Status-Command {
-    $cfg=Read-Config;$a='STOPPED';$t='STOPPED'
-    try{$r=Invoke-WebRequest "http://127.0.0.1:$($cfg.Port)/healthz" -UseBasicParsing -TimeoutSec 2;if($r.StatusCode -eq 200){$a='RUNNING'}}catch{}
-    if(Test-PidFile $TunnelPid){$t='RUNNING'}
-    $mode=if(Test-Path $ModePath){Get-InstalledMode}else{'NOT INSTALLED'}
-    Write-Host "AgentDock : $a";Write-Host "Tunnel    : $t";Write-Host "Mode      : $mode";Write-Host "Default   : $($cfg.DefaultWorkspace)";Write-Host "MCP       : http://127.0.0.1:$($cfg.Port)/mcp"
+    $cfg = Read-Config
+    $a = 'STOPPED'
+    $t = 'STOPPED'
+    try {
+        $r = Invoke-WebRequest "http://127.0.0.1:$($cfg.Port)/healthz" -UseBasicParsing -TimeoutSec 2
+        if ($r.StatusCode -eq 200) { $a = 'RUNNING' }
+    } catch {}
+    if (Test-PidFile $TunnelPid) { $t = 'RUNNING' }
+    $mode = if (Test-Path $ModePath) { Get-InstalledMode } else { 'NOT INSTALLED' }
+    Write-Host "AgentDock : $a"
+    Write-Host "Tunnel    : $t"
+    Write-Host "Mode      : $mode"
+    Write-Host "Default   : $($cfg.DefaultWorkspace)"
+    Write-Host "MCP       : http://127.0.0.1:$($cfg.Port)/mcp"
 }
 
 function Logs-Command {
-    if(Test-Path $ModePath){$m=Get-InstalledMode;if($m -like 'docker-*' -and(Test-Path $Compose)){Invoke-Compose -ComposeArgs @('logs','--tail','100','agentdock')}}
-    if(Test-Path $NativeOut){Get-Content $NativeOut -Tail 100}
-    if(Test-Path $NativeErr){Get-Content $NativeErr -Tail 100}
-    if(Test-Path $TunnelLog){Get-Content $TunnelLog -Tail 100}
-    if(Test-Path $TunnelErr){Get-Content $TunnelErr -Tail 100}
+    if (Test-Path $ModePath) {
+        $m = Get-InstalledMode
+        if ($m -like 'docker-*' -and (Test-Path $Compose)) { Invoke-Compose -ComposeArgs @('logs','--tail','100','agentdock') }
+    }
+    if (Test-Path $NativeOut) { Get-Content $NativeOut -Tail 100 }
+    if (Test-Path $NativeErr) { Get-Content $NativeErr -Tail 100 }
+    if (Test-Path $TunnelLog) { Get-Content $TunnelLog -Tail 100 }
+    if (Test-Path $TunnelErr) { Get-Content $TunnelErr -Tail 100 }
 }
 
-function Apply-Command { Stop-Command; Start-Command }
+function Apply-Command {
+    Test-StartPreflight
+    Stop-Command
+    Start-Command
+}
 
 function Update-Command {
-    $cfg=Read-Config
-    if(-not(Test-Path $ModePath)){Fail 'Run install first.'}
-    $mode=Get-InstalledMode
-    if($mode -like 'docker-*'){
-        $token=Get-Token
+    $cfg = Read-Config
+    if (-not (Test-Path $ModePath)) { Fail 'Run install first.' }
+    $mode = Get-InstalledMode
+    Assert-ModeAvailable $mode
+    if ($mode -like 'docker-*') {
+        $token = Get-Token
         Write-Compose $cfg $mode $token
         Invoke-Compose -ComposeArgs @('pull')
-    } else { Install-NativeAgentDock -Force }
+    } else {
+        Install-NativeAgentDock -Force
+    }
 }
 
-$Command=if($args.Count -gt 0){[string]$args[0]}else{'help'}
-switch($Command){
-    'install'{Install-Command}
-    'start'{Start-Command}
-    'stop'{Stop-Command}
-    'restart'{Apply-Command}
-    'apply'{Apply-Command}
-    'status'{Status-Command}
-    'logs'{Logs-Command}
-    'update'{Update-Command}
-    default{Write-Host 'Usage: .\agentdock.cmd {install|start|stop|restart|apply|status|logs|update}'}
+$Command = if ($args.Count -gt 0) { [string]$args[0] } else { 'help' }
+switch ($Command) {
+    'install' { Install-Command }
+    'start' { Start-Command }
+    'stop' { Stop-Command }
+    'restart' { Apply-Command }
+    'apply' { Apply-Command }
+    'status' { Status-Command }
+    'logs' { Logs-Command }
+    'update' { Update-Command }
+    default { Write-Host 'Usage: .\agentdock.cmd {install|start|stop|restart|apply|status|logs|update}' }
 }
