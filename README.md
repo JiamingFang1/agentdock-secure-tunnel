@@ -61,7 +61,7 @@ macOS / Linux：
 cp config.example.yaml config.yaml
 ```
 
-编辑 `config.yaml`：
+推荐配置：
 
 ```yaml
 deployment_mode: 'auto'
@@ -70,56 +70,89 @@ tunnel_id: 'TUNNEL_ID_HERE'
 runtime_api_key: 'RUNTIME_API_KEY_HERE'
 agentdock_port: 18765
 
-default_workspace: 'visionagent'
+default_workspace: 'VisionAgent'
 
 workspaces:
-  - name: 'visionagent'
-    path: 'D:\Projects\VisionAgent'
+  - path: '/home/fangjiaming/project/VisionAgent'
     mode: 'rw'
 
-  - name: 'linux-project'
-    path: '/home/fangjiaming/project/LinuxProject'
+  - path: 'E:\work\chatgpt-workspace'
     mode: 'rw'
+```
 
+### workspace 名称规则
+
+默认不需要写 `name`。脚本会自动使用宿主目录最后一级作为 workspace 名称：
+
+```text
+/home/fangjiaming/project/VisionAgent
+→ VisionAgent
+
+E:\work\chatgpt-workspace
+→ chatgpt-workspace
+```
+
+所以上面的配置在容器中对应：
+
+```text
+/home/agentdock/AgentDock/workspaces/VisionAgent
+/home/agentdock/AgentDock/workspaces/chatgpt-workspace
+```
+
+`default_workspace: 'VisionAgent'` 会额外提供一个稳定入口：
+
+```text
+/home/agentdock/AgentDock/default
+→ 同一个 VisionAgent 宿主目录
+```
+
+只有在你明确希望“容器内名称”和“宿主目录名”不同，或者多个目录最后一级重名时，才需要写 `name`：
+
+```yaml
+workspaces:
   - name: 'docs'
     path: 'D:\Documents'
     mode: 'ro'
 ```
 
-说明：
-
-- `default_workspace`：AgentDock 启动后的默认工作目录。
-- `workspaces`：可挂载多个目录。
-- `mode: rw`：可读写。
-- `mode: ro`：只读。
-- workspace `name` 只能使用字母、数字、`.`、`_`、`-`。
-
-Docker 模式下容器内统一映射为：
+此时容器内路径是：
 
 ```text
-/workspaces/visionagent
-/workspaces/linux-project
-/workspaces/docs
+/home/agentdock/AgentDock/workspaces/docs
 ```
 
-`default_workspace: visionagent` 对应：
+`name` 仅用于容器侧挂载名称，不会创建数据副本。
+
+### mode
 
 ```text
-AGENTDOCK_DEFAULT_DIR=/workspaces/visionagent
+rw = 可读写
+ro = 只读
 ```
+
+### Docker 权限模型
+
+Docker 模式会自动处理常见的 Linux/WSL UID/GID 权限问题：
+
+- Linux / macOS：AgentDock 使用当前宿主用户的 UID/GID 运行；
+- Windows + WSL Docker：AgentDock 使用默认 WSL 用户的 UID/GID 运行；
+- AgentDock 自己的内部 volume 会由一次性 init 容器自动调整权限；
+- **不会**自动 `chown -R`、`chmod 777` 或修改 workspace 源码目录的 owner/ACL。
+
+因此普通用户拥有的 `700` 项目目录也可以直接挂载给 AgentDock 使用，不需要安装后再手工修权限。
+
+如果当前宿主用户自己都无法读写某个配置为 `rw` 的目录，启动会直接给出明确错误，而不是静默失败。
 
 ### Windows + WSL 混合目录
 
-可以同时配置：
+Windows 配置中可以同时写 Windows 原生路径和 WSL 路径：
 
 ```yaml
 workspaces:
-  - name: 'windows-code'
-    path: 'D:\Projects\Code'
+  - path: 'D:\Projects\Code'
     mode: 'rw'
 
-  - name: 'wsl-code'
-    path: '/home/fangjiaming/project/Code'
+  - path: '/home/fangjiaming/project/LinuxProject'
     mode: 'rw'
 ```
 
@@ -189,37 +222,41 @@ macOS / Linux：
 ./agentdock start
 ```
 
-### 修改默认目录后立即生效
+Docker 模式内部结构：
 
-例如把：
-
-```yaml
-default_workspace: 'visionagent'
+```text
+/home/agentdock/AgentDock/                  # AgentDock 内部安全根目录
+├── default                                 # default_workspace 的稳定入口
+└── workspaces/
+    ├── VisionAgent                         # 自动取源目录最后一级
+    └── chatgpt-workspace                   # 自动取源目录最后一级
 ```
 
-改成：
+AgentDock 的 `AGENTDOCK_DEFAULT_DIR` 保持为容器内部安全目录：
 
-```yaml
-default_workspace: 'linux-project'
+```text
+/home/agentdock/AgentDock
 ```
 
-然后执行：
+这样 AgentDock 启动时的私有目录权限检查不会去 `chmod` 宿主机 bind mount 根目录。
+
+### 修改配置后立即生效
+
+修改 `default_workspace`、新增/删除 workspace、修改路径或 `ro/rw` 后执行：
+
+Windows：
 
 ```powershell
 .\agentdock.cmd apply
 ```
 
-或：
+macOS / Linux：
 
 ```bash
 ./agentdock apply
 ```
 
-`apply` 会重新读取 `config.yaml`、重新生成容器挂载和 `AGENTDOCK_DEFAULT_DIR`，然后重启 AgentDock 和 Tunnel。
-
-新增、删除 workspace 或修改 `ro/rw` 后也执行同一个 `apply` 即可。
-
-`start` 和 `restart` 同样会重新读取配置；推荐日常修改配置后直接使用 `apply`。
+`apply` 会重新读取 `config.yaml`、重新生成容器挂载并重启 AgentDock 和 Tunnel。
 
 常用命令：
 
@@ -240,7 +277,7 @@ default_workspace: 'linux-project'
 AgentDock : RUNNING
 Tunnel    : RUNNING
 Mode      : docker-wsl
-Default   : visionagent
+Default   : VisionAgent -> /home/agentdock/AgentDock/default
 MCP       : http://127.0.0.1:18765/mcp
 ```
 
@@ -266,9 +303,8 @@ MCP       : http://127.0.0.1:18765/mcp
 
 ```text
 Host
-├── D:\Projects\VisionAgent  → /workspaces/visionagent
-├── /home/.../LinuxProject   → /workspaces/linux-project
-└── D:\Documents             → /workspaces/docs (ro)
+├── /home/.../VisionAgent   → /home/agentdock/AgentDock/workspaces/VisionAgent
+└── D:\work\chatgpt-workspace → /home/agentdock/AgentDock/workspaces/chatgpt-workspace
 ```
 
 未挂载的宿主机目录不会因为本项目配置自动暴露给 AgentDock。
@@ -290,6 +326,8 @@ native 模式没有挂载隔离，也无法强制执行 `ro/rw` workspace 权限
 ├── agentdock.cmd
 ├── agentdock
 ├── scripts/
+│   ├── bootstrap-tunnel.ps1
+│   ├── bootstrap-tunnel.sh
 │   ├── windows.ps1
 │   └── agentdock.sh
 ├── docs/images/
