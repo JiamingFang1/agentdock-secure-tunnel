@@ -189,12 +189,13 @@ EOF
 }
 
 write_compose() {
-  local token="$1" identity uid gid safe_root default_path default_mode name path mode escaped
+  local token="$1" identity uid gid safe_root default_mode default_dir name path mode escaped
   identity="$(runtime_uid_gid)"; uid="${identity%%:*}"; gid="${identity##*:}"
   safe_root="/home/agentdock/AgentDock"
   check_workspace_access
-  default_path="$(workspace_path_by_name "$DEFAULT_WORKSPACE")"
   default_mode="$(workspace_mode_by_name "$DEFAULT_WORKSPACE")"
+  [ "$default_mode" = rw ] || fail "default_workspace '$DEFAULT_WORKSPACE' must use mode: rw because AgentDock secures its default directory at startup."
+  default_dir="${safe_root}/workspaces/${DEFAULT_WORKSPACE}"
 
   cat > "$COMPOSE" <<EOF
 services:
@@ -225,14 +226,11 @@ services:
       AGENTDOCK_PORT: "8765"
       AGENTDOCK_OAUTH_ENABLED: "false"
       AGENTDOCK_AUTH_TOKEN: "${token}"
-      AGENTDOCK_DEFAULT_DIR: "${safe_root}"
+      AGENTDOCK_DEFAULT_DIR: "${default_dir}"
     volumes:
       - agentdock_home:/home/agentdock/.agentdock
       - agentdock_root:/home/agentdock/AgentDock
 EOF
-
-  escaped="${default_path//\'/\'\'}"
-  printf "      - '%s:%s/default:%s'\n" "$escaped" "$safe_root" "$default_mode" >> "$COMPOSE"
 
   while IFS='|' read -r name path mode; do
     escaped="${path//\'/\'\'}"
@@ -288,7 +286,7 @@ start_cmd() {
   mode="$(cat "$MODE_FILE")"; token="$(get_token)"; write_profile
   if [ "$mode" = docker ]; then write_compose "$token"; docker compose -f "$COMPOSE" up -d --force-recreate; else start_native "$token"; fi
   wait_agentdock; start_tunnel "$token"
-  echo "AgentDock : RUNNING"; echo "Tunnel    : RUNNING"; echo "Mode      : $mode"; echo "Default   : $DEFAULT_WORKSPACE -> /home/agentdock/AgentDock/default"; echo "MCP       : http://127.0.0.1:${PORT}/mcp"
+  echo "AgentDock : RUNNING"; echo "Tunnel    : RUNNING"; echo "Mode      : $mode"; echo "Default   : $DEFAULT_WORKSPACE -> /home/agentdock/AgentDock/workspaces/$DEFAULT_WORKSPACE"; echo "MCP       : http://127.0.0.1:${PORT}/mcp"
 }
 
 stop_cmd() {
