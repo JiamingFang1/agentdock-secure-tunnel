@@ -64,21 +64,41 @@ cp config.example.yaml config.yaml
 推荐配置：
 
 ```yaml
+# auto = 优先使用 Docker；没有 Docker 时再询问是否使用 native
 deployment_mode: 'auto'
 
+# 第 1 步创建 Tunnel 后获得的 Tunnel ID
 tunnel_id: 'TUNNEL_ID_HERE'
+
+# 第 2 步创建的 Restricted Runtime API Key
+# 不要提交真实 Key；config.yaml 已加入 .gitignore
 runtime_api_key: 'RUNTIME_API_KEY_HERE'
+
+# AgentDock 映射到宿主机的本地端口，一般保持默认即可
 agentdock_port: 18765
 
-default_workspace: 'VisionAgent'
+# 默认工作区名称。
+# 不写 name 时，工作区名称自动取 path 的最后一级目录名。
+# 下面第一个 path 最后一级是 my-project，所以这里填写 my-project。
+default_workspace: 'my-project'
 
 workspaces:
-  - path: '/home/fangjiaming/project/VisionAgent'
+  # WSL / Linux / macOS 目录示例
+  # rw = AgentDock 可读写该目录
+  - path: '/home/<user>/projects/my-project'
     mode: 'rw'
 
-  - path: 'E:\work\win-chatgpt-workspace'
+  # Windows 目录示例
+  # Windows + WSL Docker 模式下会自动转换为 /mnt/d/workspace/shared-data
+  - path: 'D:\workspace\shared-data'
     mode: 'rw'
+
+  # 如需只读目录，可使用：
+  # - path: 'D:\workspace\reference-docs'
+  #   mode: 'ro'
 ```
+
+> 把示例路径替换成你自己实际存在的目录即可。不要把密码、API Key 或其他敏感信息写进 workspace 路径或提交到 Git。
 
 ### workspace 名称规则
 
@@ -87,30 +107,30 @@ workspaces:
 脚本会自动使用宿主目录最后一级作为 workspace 名称：
 
 ```text
-/home/fangjiaming/project/VisionAgent
-→ VisionAgent
+/home/<user>/projects/my-project
+→ my-project
 
-E:\work\win-chatgpt-workspace
-→ win-chatgpt-workspace
+D:\workspace\shared-data
+→ shared-data
 ```
 
 Docker 模式下对应：
 
 ```text
-/home/agentdock/AgentDock/workspaces/VisionAgent
-/home/agentdock/AgentDock/workspaces/win-chatgpt-workspace
+/home/agentdock/AgentDock/workspaces/my-project
+/home/agentdock/AgentDock/workspaces/shared-data
 ```
 
 `default_workspace` 填自动推导出的目录名，例如：
 
 ```yaml
-default_workspace: 'VisionAgent'
+default_workspace: 'my-project'
 ```
 
 则 AgentDock 的真实默认工作目录就是：
 
 ```text
-/home/agentdock/AgentDock/workspaces/VisionAgent
+/home/agentdock/AgentDock/workspaces/my-project
 ```
 
 旧版配置中的 `name` 仍兼容，但新配置建议省略，直接使用目录最后一级名称。
@@ -157,10 +177,10 @@ Windows 配置中可以同时写 Windows 原生路径和 WSL 路径：
 
 ```yaml
 workspaces:
-  - path: 'E:\Projects\Code'
+  - path: 'D:\workspace\windows-project'
     mode: 'rw'
 
-  - path: '/home/fangjiaming/project/LinuxProject'
+  - path: '/home/<user>/projects/linux-project'
     mode: 'rw'
 ```
 
@@ -169,8 +189,8 @@ workspaces:
 Windows 路径会自动转换：
 
 ```text
-E:\Projects\Code
-→ /mnt/e/Projects/Code
+D:\workspace\windows-project
+→ /mnt/d/workspace/windows-project
 ```
 
 WSL 路径保持原样。
@@ -235,20 +255,20 @@ Docker 模式内部结构示例：
 ```text
 /home/agentdock/AgentDock/
 └── workspaces/
-    ├── VisionAgent
-    └── win-chatgpt-workspace
+    ├── my-project
+    └── shared-data
 ```
 
 如果配置：
 
 ```yaml
-default_workspace: 'VisionAgent'
+default_workspace: 'my-project'
 ```
 
 则：
 
 ```text
-AGENTDOCK_DEFAULT_DIR=/home/agentdock/AgentDock/workspaces/VisionAgent
+AGENTDOCK_DEFAULT_DIR=/home/agentdock/AgentDock/workspaces/my-project
 ```
 
 也就是说 AgentDock 启动后的默认工作目录就是配置指定的 workspace，不再额外创建 `/default` 挂载。
@@ -290,7 +310,7 @@ macOS / Linux：
 AgentDock : RUNNING
 Tunnel    : RUNNING
 Mode      : docker-wsl
-Default   : VisionAgent -> /home/agentdock/AgentDock/workspaces/VisionAgent
+Default   : my-project -> /home/agentdock/AgentDock/workspaces/my-project
 MCP       : http://127.0.0.1:18765/mcp
 ```
 
@@ -316,11 +336,11 @@ MCP       : http://127.0.0.1:18765/mcp
 
 ```text
 Host
-├── /home/.../VisionAgent
-│   → /home/agentdock/AgentDock/workspaces/VisionAgent
+├── /home/<user>/projects/my-project
+│   → /home/agentdock/AgentDock/workspaces/my-project
 │
-└── E:\work\win-chatgpt-workspace
-    → /home/agentdock/AgentDock/workspaces/win-chatgpt-workspace
+└── D:\workspace\shared-data
+    → /home/agentdock/AgentDock/workspaces/shared-data
 ```
 
 未挂载的宿主机目录不会因为本项目配置自动暴露给 AgentDock。
