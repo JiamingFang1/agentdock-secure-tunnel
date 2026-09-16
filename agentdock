@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
-set -e
-bash scripts/bootstrap-tunnel.sh
-bash scripts/agentdock.sh "$@"
+set -Eeuo pipefail
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+trap 'rc=$?; printf "ERROR: agentdock launcher stopped (exit %s). See the message above.\n" "$rc" >&2; exit "$rc"' ERR
+
+# Only commands that need a runtime may bootstrap it. Help/status/stop/logs
+# must remain usable without GitHub access, even on a fresh checkout.
+case "${1:-help}" in
+  install|start|restart|apply|update)
+    printf '==> Preparing tunnel-client\n' >&2
+    bash "$ROOT_DIR/scripts/bootstrap-tunnel.sh"
+    ;;
+esac
+exec bash "$ROOT_DIR/scripts/agentdock.sh" "$@"

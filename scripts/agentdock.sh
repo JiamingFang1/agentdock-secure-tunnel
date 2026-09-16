@@ -1,4 +1,7 @@
-set -euo pipefail
+#!/usr/bin/env bash
+set -Eeuo pipefail
+# Report only location and status, never BASH_COMMAND (which may contain a key).
+trap 'rc=$?; printf "ERROR: agentdock.sh stopped at line %s (exit %s). See the message above.\n" "$LINENO" "$rc" >&2; exit "$rc"' ERR
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="$ROOT_DIR/config.yaml"
@@ -117,28 +120,14 @@ get_token() {
   cat "$TOKEN_FILE"
 }
 
-os_name() { case "$(uname -s)" in Darwin) echo darwin;; Linux) echo linux;; *) fail "Unsupported OS";; esac; }
-arch_name() { case "$(uname -m)" in x86_64|amd64) echo amd64;; arm64|aarch64) echo arm64;; *) fail "Unsupported architecture";; esac; }
-
-latest_asset_url() {
-  local repo="$1" pattern="$2"
-  curl -fsSL -H 'User-Agent: agentdock-secure-tunnel' "https://api.github.com/repos/$repo/releases/latest" | grep 'browser_download_url' | cut -d '"' -f 4 | grep -E "$pattern" | head -n1
-}
-
 install_tunnel_client() {
   [ -x "$BIN_DIR/tunnel-client" ] || fail "tunnel-client is missing. Run ./agentdock so bootstrap-tunnel.sh can install it."
 }
 
 install_native_agentdock() {
+  command -v python3 >/dev/null 2>&1 || fail "Python 3 is required for verified release downloads. Install Python 3, then retry."
   mkdir -p "$BIN_DIR" "$NATIVE_HOME"
-  [ -x "$BIN_DIR/agentdock" ] && return 0
-  local os arch pattern url archive tmp bin
-  os="$(os_name)"; arch="$(arch_name)"; pattern="agentdock_${os}_${arch}\\.tar\\.gz$"
-  url="$(latest_asset_url uvwt/agentdock "$pattern")"; [ -n "$url" ] || fail "Unable to locate AgentDock release asset"
-  archive="$RUNTIME/agentdock.tar.gz"; tmp="$RUNTIME/agentdock-extract"; rm -rf "$tmp"; mkdir -p "$tmp"
-  curl -fL "$url" -o "$archive"; tar -xzf "$archive" -C "$tmp"
-  bin="$(find "$tmp" -type f -name agentdock | head -n1)"; [ -n "$bin" ] || fail "AgentDock binary not found"
-  cp "$bin" "$BIN_DIR/agentdock"; chmod +x "$BIN_DIR/agentdock"; rm -rf "$archive" "$tmp"
+  python3 "$ROOT_DIR/scripts/download-release.py" agentdock "$BIN_DIR/agentdock" "$@"
 }
 
 docker_ready() { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
@@ -268,15 +257,24 @@ start_tunnel() {
 }
 
 wait_agentdock() {
-  for _ in $(seq 1 50); do curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && return 0; sleep .5; done
+  for _ in $(seq 1 50); do curl -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && return 0; sleep .5; done
   fail "AgentDock health check failed"
 }
 
 install_cmd() {
+  echo "==> Checking configuration" >&2
   load_config; mkdir -p "$RUNTIME" "$BIN_DIR"; install_tunnel_client
   local mode token
-  mode="$(select_mode)"; token="$(get_token)"; write_profile; printf '%s' "$mode" > "$MODE_FILE"
-  if [ "$mode" = docker ]; then write_compose "$token"; docker compose -f "$COMPOSE" pull; else install_native_agentdock; fi
+  echo "==> Selecting deployment mode" >&2
+  mode="$(select_mode)"; token="$(get_token)"; write_profile
+  if [ "$mode" = docker ]; then
+    echo "==> Pulling AgentDock Docker image" >&2
+    write_compose "$token"; docker compose -f "$COMPOSE" pull
+  else
+    echo "==> Installing native AgentDock (no container directory isolation)" >&2
+    install_native_agentdock
+  fi
+  printf '%s' "$mode" > "$MODE_FILE"
   echo "Installed in $mode mode. Default workspace: $DEFAULT_WORKSPACE"
 }
 
@@ -304,7 +302,7 @@ stop_cmd() {
 status_cmd() {
   load_config
   local a=STOPPED t=STOPPED mode
-  curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && a=RUNNING || true
+  curl -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && a=RUNNING || true
   pid_alive "$TUNNEL_PID" && t=RUNNING || true
   mode="$(cat "$MODE_FILE" 2>/dev/null || echo 'NOT INSTALLED')"
   echo "AgentDock : $a"; echo "Tunnel    : $t"; echo "Mode      : $mode"; echo "Default   : $DEFAULT_WORKSPACE"; echo "MCP       : http://127.0.0.1:${PORT}/mcp"
@@ -314,6 +312,7 @@ logs_cmd() {
   [ -f "$MODE_FILE" ] && [ "$(cat "$MODE_FILE")" = docker ] && [ -f "$COMPOSE" ] && docker compose -f "$COMPOSE" logs --tail 100 agentdock || true
   [ -f "$NATIVE_LOG" ] && tail -n 100 "$NATIVE_LOG"
   [ -f "$TUNNEL_LOG" ] && tail -n 100 "$TUNNEL_LOG"
+  return 0
 }
 
 apply_cmd() { stop_cmd; start_cmd; }
@@ -324,7 +323,7 @@ update_cmd() {
     local token
     token="$(get_token)"; write_compose "$token"; docker compose -f "$COMPOSE" pull
   else
-    rm -f "$BIN_DIR/agentdock"; install_native_agentdock
+    install_native_agentdock --force
   fi
 }
 

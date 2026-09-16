@@ -6,11 +6,18 @@ on:
 
 jobs:
   bash:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Check Bash syntax
-        run: bash -n agentdock scripts/bootstrap-tunnel.sh scripts/agentdock.sh
+      - name: Check Bash syntax and launcher mode
+        run: |
+          bash -n agentdock scripts/bootstrap-tunnel.sh scripts/agentdock.sh
+          test -x agentdock
+      - name: Offline download and launcher regression tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   powershell:
     runs-on: windows-latest
