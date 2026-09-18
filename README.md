@@ -54,6 +54,8 @@ macOS / Linux：
 cp config.example.yaml config.yaml
 ```
 
+> 复制示例配置仅用于首次配置；已经填写过 `config.yaml` 时不要覆盖它。
+
 编辑 `config.yaml`：
 
 ```yaml
@@ -115,14 +117,40 @@ WSL 没有可用发行版        → 可安装 WSL + Ubuntu
 
 > WSL 本身通常 **不自带 Docker Engine**。WSL 中能直接执行 `docker`，常见原因是 Docker Desktop 开启了 WSL integration，或用户之前自行安装过 Docker Engine。
 
-自动安装 Docker Engine 目前支持 Ubuntu / Debian WSL，并使用 Docker 官方 APT 仓库。安装 WSL + Ubuntu 可能需要管理员权限、Windows 重启，以及首次打开 Ubuntu 创建 Linux 用户；完成后重新运行 `\.\agentdock.cmd install` 即可。
+自动安装 Docker Engine 目前支持 Ubuntu / Debian WSL，并使用 Docker 官方 APT 仓库。安装 WSL + Ubuntu 可能需要管理员权限、Windows 重启，以及首次打开 Ubuntu 创建 Linux 用户；完成后重新运行 `.\agentdock.cmd install` 即可。
 
 ### macOS / Linux
+
+先准备 **Python 3.8+、curl**；使用 Docker 隔离时，还需先安装并启动 Docker Engine，确保 `docker compose` 可用。macOS / Linux 安装器不会自动安装 Docker。下载器只使用 Python 标准库，无需额外 Python 包。
+
+在仓库目录安装、启动：
 
 ```bash
 ./agentdock install
 ./agentdock start
+./agentdock status
 ```
+
+新版 `agentdock` 已在 Git 中标记为可执行。ZIP 解压或旧 checkout 仍提示 `permission denied` 时，可改用：
+
+```bash
+bash ./agentdock install
+bash ./agentdock start
+```
+
+**旧版本更新后重新安装**（保留已有配置和运行数据）：
+
+```bash
+git -c core.fileMode=false pull --ff-only origin main &&
+./agentdock install &&
+./agentdock start
+```
+
+`core.fileMode=false` 仅对这次 pull 生效，用于忽略之前手动 `chmod` 造成的纯权限变化；不会强制覆盖本地内容修改。若 Git 提示冲突，先处理冲突，不要用 `reset --hard`。**不需要删除 `.runtime/`，也不需要重填 `config.yaml`。**
+
+下载过程会显示查询、下载、SHA-256 校验等阶段；网络请求有超时和错误提示。已有可运行的 tunnel-client 会复用。看到 `Installed in ... mode` 才表示安装流程完成，安装不会代替 `start`。
+
+权限、Python 依赖、网络代理或下载失败的详细处理见：[macOS / Linux 安装排障](docs/macos-install.md)。
 
 正常启动后会看到类似：
 
@@ -133,6 +161,8 @@ Mode      : docker-wsl
 Default   : my-project -> /home/agentdock/AgentDock/workspaces/my-project
 MCP       : http://127.0.0.1:18765/mcp
 ```
+
+> 上面是 Windows + WSL 的输出示例；macOS / Linux Docker 模式显示 `Mode: docker`。本地进程状态不等于端到端连接验证，仍需在 ChatGPT 中调用一次只读工具。
 
 以后修改 `config.yaml` 后，直接执行：
 
@@ -305,7 +335,7 @@ native 模式没有容器目录隔离，也无法强制执行 `ro/rw` workspace 
 
 > Native AgentDock 的 file / shell tools 以当前宿主机用户权限执行，可能读取、修改或删除 `workspaces` 之外的文件。`AGENTDOCK_DEFAULT_DIR` 只是默认工作目录，不是安全 allowlist。
 
-`deployment_mode: auto` 下切换到 native 时，安装器要求输入 `NATIVE` 显式确认风险。如果需要“只能访问指定目录”，使用 Docker 模式。
+`deployment_mode: auto` 下切换到 native 时，安装器会要求显式确认风险；确认文字以当前平台提示为准。如果需要“只能访问指定目录”，使用 Docker 模式。
 
 ## 安装过程会做什么
 
@@ -319,7 +349,9 @@ native 模式没有容器目录隔离，也无法强制执行 `ro/rw` workspace 
 - Docker 模式拉取 `ghcr.io/uvwt/agentdock:latest`；
 - native 模式下载 AgentDock 官方二进制到 `.runtime/bin/`。
 
-`config.yaml` 与 `.runtime/` 已加入 `.gitignore`，不会提交真实 Key。
+macOS / Linux 下载器会校验 SHA-256，并在校验及 `--version` 检查成功后替换二进制；下载失败不会覆盖原有版本。`help/status/stop/logs` 不触发下载，因此 GitHub 不可访问时仍可执行本地管理命令。
+
+`config.yaml` 与 `.runtime/` 已加入 `.gitignore`；不要强制添加或分享其中的真实 Key。
 
 ## 常用命令
 
@@ -347,9 +379,13 @@ native 模式没有容器目录隔离，也无法强制执行 `ro/rw` workspace 
 ├── scripts/
 │   ├── bootstrap-tunnel.ps1
 │   ├── bootstrap-tunnel.sh
+│   ├── download-release.py
 │   ├── windows.ps1
 │   └── agentdock.sh
-├── docs/images/
+├── docs/
+│   ├── images/
+│   └── macos-install.md
+├── tests/
 └── .runtime/
 ```
 
