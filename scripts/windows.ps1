@@ -231,6 +231,13 @@ function Invoke-WslExitCode([string[]]$WslArgs) {
     }
 }
 
+function ConvertFrom-WslOutputText([AllowNull()][string]$Text) {
+    # Explicit STRING overload: Replace([char]0,'') selects Replace(char,char)
+    # in Windows PowerShell 5.1, then fails converting the empty string to char.
+    # This throws even when the input contains no NUL characters.
+    return ([string]$Text).Replace([string][char]0,[string]::Empty).Replace([string][char]0xFEFF,[string]::Empty).Trim()
+}
+
 function Invoke-WslCapture([string[]]$WslArgs) {
     try {
         $old = $ErrorActionPreference
@@ -243,7 +250,7 @@ function Invoke-WslCapture([string[]]$WslArgs) {
         }
         if ($code -ne 0) { return $null }
         foreach ($line in $output) {
-            $value = ([string]$line).Replace([char]0,'').Trim()
+            $value = ConvertFrom-WslOutputText ([string]$line)
             if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
         }
         return $null
@@ -263,15 +270,20 @@ function Get-WslDistributions {
         } finally {
             $ErrorActionPreference = $old
         }
-        if ($code -ne 0) { return @() }
+        if ($code -ne 0) { throw "wsl.exe --list --quiet exited with code $code." }
         $items = @()
         foreach ($line in $output) {
-            $value = ([string]$line).Replace([char]0,'').Trim()
-            if (-not [string]::IsNullOrWhiteSpace($value)) { $items += $value }
+            $text = ConvertFrom-WslOutputText ([string]$line)
+            foreach ($value in ($text -split '\r\n|\n|\r')) {
+                $value = $value.Trim()
+                if (-not [string]::IsNullOrWhiteSpace($value) -and $items -notcontains $value) { $items += $value }
+            }
         }
         return @($items)
     } catch {
-        return @()
+        # Query/decoding failure is UNKNOWN, not proof of an absent distro.
+        # Stop before offering to install WSL over an existing environment.
+        throw ("WSL distribution detection failed; this does NOT mean WSL is uninstalled. Run wsl.exe --list --verbose in the same Windows account before retrying. Detail: {0}" -f $_.Exception.Message)
     }
 }
 
@@ -926,7 +938,7 @@ function Status-Command {
 function Logs-Command {
     if (Test-Path $ModePath) {
         $m = Get-InstalledMode
-        if ($m -like 'docker-*' -and (Test-Path $Compose)) { Invoke-Compose -ComposeArgs @('logs','--tail','100','agentdock') }
+        if ($m -like 'docker-*') { Invoke-Compose -ComposeArgs @('logs','--tail','100','agentdock') }
     }
     if (Test-Path $NativeOut) { Get-Content $NativeOut -Tail 100 }
     if (Test-Path $NativeErr) { Get-Content $NativeErr -Tail 100 }

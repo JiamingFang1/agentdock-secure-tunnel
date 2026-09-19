@@ -17,6 +17,25 @@ git pull --ff-only origin main
 
 本次入口修复**不需要重装镜像、不需要更换 Key、不需要删除 `.runtime/` 或重填 `config.yaml`**。若 Git 报本地修改冲突，先保存并处理修改，不要执行 `reset --hard` 或 `git clean`。
 
+## 安装时误报找不到 WSL
+
+先取消安装菜单，**不要因为这一条提示重装/注销 WSL，也不要删除 Docker 数据**。
+
+旧版 `Get-WslDistributions` 与 `Invoke-WslCapture` 使用 `.Replace([char]0,'')` 清理输出。Windows PowerShell 5.1 会选择字符替换重载，空字符串不能转换为单个字符，因而抛异常；旧的 `catch` 又把异常当成空列表或空值。这足以让已安装的发行版、UID/GID、发行版 ID 被误判为不存在。
+
+修复版改用显式字符串替换，兼容 NUL/BOM 和多行输出。只有成功查询且结果为空，才作为未发现发行版处理；查询非零退出或解析异常会单独报 `WSL distribution detection failed`，不进入安装 WSL 菜单。
+
+已有安装的机器，更新代码后通常直接 `restart`；仅确实没完成首次安装时再执行 `install`。真实环境仍有错误时，在**同一个 Windows 账号**下运行：
+
+```powershell
+wsl.exe --list --verbose
+wsl.exe --exec id -u
+wsl.exe -u root --exec docker info
+wsl.exe -u root --exec docker compose version
+```
+
+第一条是发行版清单（`Stopped` 不等于没安装），第二条验证默认发行版和用户，后两条验证默认发行版里的 Docker/Compose。多个发行版时请确认默认发行版是此前部署 Docker 的那个；本次修复不会更改默认发行版或安装新的发行版。
+
 ## 如何看结果
 
 | 输出 | 含义 |
@@ -56,5 +75,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-entry.
 ## 测试范围
 
 Windows CI 使用真实 CMD 和 Windows PowerShell 5.1、临时项目目录及模拟后端，检查路径（空格、中文、括号、`&`、`!`）、参数传递、退出码、入口被更新后的退出、下载/主脚本失败、状态检查与代理脱敏。Linux/macOS 继续执行原有下载回归。
+
+另有 Windows PowerShell 5.1 / PowerShell 7 的 WSL 检测回归：导入实际检测函数并模拟 WSL 输出，覆盖字符重载问题、NUL/BOM、多发行版、UID/GID、非零退出，以及不得误进入重装菜单。
 
 这些是离线控制流程测试，不使用真实 Key、不连接你的 WSL，也不代替真实 Docker + OpenAI 端到端验收。目录挂载、Docker/native 部署选择和自动启动功能没有在这次修复中更改。
