@@ -99,6 +99,8 @@ workspaces:
 
 启动输出中的 `RUNNING` 只代表本地状态；`Control Plane : CONNECTED` 才表示取得当前 Tunnel 的近期轮询证据，`UNVERIFIED` 表示尚未验证，不会自动停止本地服务。最终请在 ChatGPT 调用一次只读工具。Windows 入口、退出码和 `.ps1" restart` 残片的处理见：[Windows 重启排障](docs/windows-restart.md)。
 
+**WSL 启动后又变成 `Stopped`？** `docker-wsl` 模式的 `start/restart/apply` 现在会自动建立并复用后台 WSL 保活会话，`stop` 在停止项目服务后释放该会话，不关闭整个 WSL。已经安装的机器更新后直接运行 `.\agentdock.cmd start`；不必重装，也不必一直开着 Ubuntu 终端。`status` 会显示 `WSL session` 和 `WSL distro`。这是运行期间保活，**不是开机自启**。详细验收与限制见：[WSL 保活与掉线排障](docs/wsl-lifetime.md)。
+
 Windows 安装器会自动检测容器运行时：
 
 ```text
