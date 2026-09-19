@@ -24,7 +24,7 @@ class StaticEntryTests(unittest.TestCase):
         self.assertEqual(text.count("-File"), 1)
         self.assertIn("DisableDelayedExpansion", text)
         self.assertIn('"%~dp0scripts\\windows-entry.ps1" %*', text)
-        self.assertRegex(text, r"(?s)\(\s+.*-File.*\n\s+exit /b\s+\)")
+        self.assertRegex(text, r"(?s)\(\s+.*-File.*\n\s+call exit /b %%errorlevel%%\s+\)")
         self.assertIn("*.cmd text eol=crlf", (ROOT / ".gitattributes").read_text())
 
 
