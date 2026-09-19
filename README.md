@@ -95,6 +95,10 @@ workspaces:
 .\agentdock.cmd start
 ```
 
+已有安装更新本次启动入口修复时，先执行 `git pull --ff-only origin main`，确认拉取成功后执行 `.\agentdock.cmd restart`，**无需重新安装或删除 `.runtime/`**。
+
+启动输出中的 `RUNNING` 只代表本地状态；`Control Plane : CONNECTED` 才表示取得当前 Tunnel 的近期轮询证据，`UNVERIFIED` 表示尚未验证，不会自动停止本地服务。最终请在 ChatGPT 调用一次只读工具。Windows 入口、退出码和 `.ps1" restart` 残片的处理见：[Windows 重启排障](docs/windows-restart.md)。
+
 Windows 安装器会自动检测容器运行时：
 
 ```text

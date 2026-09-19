@@ -23,15 +23,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check PowerShell syntax
-        shell: pwsh
+      - name: Check all PowerShell scripts with Windows PowerShell 5.1
+        shell: powershell
         run: |
-          foreach ($path in @('scripts/bootstrap-tunnel.ps1','scripts/windows.ps1')) {
+          foreach ($file in Get-ChildItem scripts -Filter '*.ps1') {
             $tokens = $null
             $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors) | Out-Null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors.Count -gt 0) {
               $errors | Format-List | Out-String | Write-Error
               exit 1
             }
           }
+      - name: Offline real CMD and Windows PowerShell entry regression tests
+        shell: powershell
+        run: python -m unittest discover -s tests -p 'test_windows_entry.py' -v
