@@ -169,3 +169,5 @@ Test-Case 'list failure aborts deployment selection before install menu' {
 }
 Write-Host "WSL detection tests: $script:Passed passed, $script:Failed failed. PowerShell $($PSVersionTable.PSVersion)"
 if ($script:Failed -gt 0) { exit 1 }
+# Expected failure cases set LASTEXITCODE in the mock; do not leak it to CI.
+exit 0

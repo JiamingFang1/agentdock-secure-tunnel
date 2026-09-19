@@ -938,7 +938,7 @@ function Status-Command {
 function Logs-Command {
     if (Test-Path $ModePath) {
         $m = Get-InstalledMode
-        if ($m -like 'docker-*') { Invoke-Compose -ComposeArgs @('logs','--tail','100','agentdock') }
+        if ($m -like 'docker-*' -and (Test-Path $Compose)) { Invoke-Compose -ComposeArgs @('logs','--tail','100','agentdock') }
     }
     if (Test-Path $NativeOut) { Get-Content $NativeOut -Tail 100 }
     if (Test-Path $NativeErr) { Get-Content $NativeErr -Tail 100 }
