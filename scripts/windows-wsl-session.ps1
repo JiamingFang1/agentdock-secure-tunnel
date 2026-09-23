@@ -45,18 +45,54 @@ function Quote-WslSessionArgument([string]$Value) {
     return '"' + $Value + '"'
 }
 
-function New-WslSessionProcess([string]$Executable,[string]$ArgumentLine,$Paths) {
-    # Keep unnecessary OpenAI credentials out of the idle session's environment.
-    $names = @('CONTROL_PLANE_API_KEY','OPENAI_API_KEY','RUNTIME_API_KEY','AGENTDOCK_AUTH_TOKEN','AGENTDOCK_BEARER_HEADER')
-    $saved = @{}
-    foreach ($name in $names) {
-        $saved[$name] = [Environment]::GetEnvironmentVariable($name,'Process')
-        [Environment]::SetEnvironmentVariable($name,$null,'Process')
-    }
+function Resolve-WslSessionExecutable {
+    $candidates = New-Object System.Collections.Generic.List[string]
     try {
-        return (Start-Process -FilePath $Executable -ArgumentList $ArgumentLine -WindowStyle Hidden -PassThru)
-    } finally {
-        foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name,$saved[$name],'Process') }
+        $cmd = Get-Command wsl.exe -CommandType Application -ErrorAction Stop
+        if ($cmd.Source) { $candidates.Add([string]$cmd.Source) }
+    } catch {}
+    if ($env:WINDIR) {
+        $candidates.Add((Join-Path $env:WINDIR 'System32\wsl.exe'))
+        $candidates.Add((Join-Path $env:WINDIR 'Sysnative\wsl.exe'))
+    }
+    foreach ($candidate in $candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    throw 'Unable to locate wsl.exe. Existing WSL/data will not be reinstalled.'
+}
+
+function New-WslSessionProcess([string]$Executable,[string]$ArgumentLine,$Paths) {
+    if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+        throw "Resolved wsl.exe does not exist: $Executable"
+    }
+
+    # Use System.Diagnostics.Process directly. On some Windows hosts,
+    # Start-Process can fail with ERROR_FILE_NOT_FOUND for a long-lived hidden
+    # wsl.exe child even when direct wsl.exe invocations work.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Executable
+    $psi.Arguments = $ArgumentLine
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = Split-Path -Parent $Executable
+
+    # Remove secrets from the CHILD environment without mutating the parent.
+    foreach ($name in @('CONTROL_PLANE_API_KEY','OPENAI_API_KEY','RUNTIME_API_KEY','AGENTDOCK_AUTH_TOKEN','AGENTDOCK_BEARER_HEADER')) {
+        if ($psi.EnvironmentVariables.ContainsKey($name)) {
+            $psi.EnvironmentVariables.Remove($name)
+        }
+    }
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    try {
+        if (-not $process.Start()) { throw 'Process.Start returned false.' }
+        return $process
+    } catch {
+        $process.Dispose()
+        throw
     }
 }
 
@@ -87,7 +123,7 @@ function Start-AgentDockWslSession([string]$RuntimeDir,[string]$HelperScript) {
             }
         }
         if (-not (Test-Path -LiteralPath $HelperScript -PathType Leaf)) { throw 'Missing scripts/wsl-session.sh; pull the complete update.' }
-        $exe = (Get-Command wsl.exe -CommandType Application -ErrorAction Stop).Source
+        $exe = Resolve-WslSessionExecutable
         $linuxHelper = Invoke-WslSessionText -WslArguments @('--distribution',$distro,'--exec','wslpath','-a','-u',[IO.Path]::GetFullPath($HelperScript))
         $linuxLease = Invoke-WslSessionText -WslArguments @('--distribution',$distro,'--exec','wslpath','-a','-u',[IO.Path]::GetFullPath($paths.Lease))
         $linuxReady = Invoke-WslSessionText -WslArguments @('--distribution',$distro,'--exec','wslpath','-a','-u',[IO.Path]::GetFullPath($paths.Ready))

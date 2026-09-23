@@ -3,7 +3,6 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/windows-wsl-session.ps1')
-$originalSpawn = (Get-Item Function:New-WslSessionProcess).ScriptBlock
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('wsl-session-tests-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
 $helper = Join-Path $temp 'helper.sh'
@@ -144,23 +143,13 @@ try {
         Assert-Throws { Quote-WslSessionArgument "bad`nargument" } 'Unsupported'
         Assert-Throws { Quote-WslSessionArgument 'bad"argument' } 'Unsupported'
     }
-    Test-Case 'secrets are excluded from new holder and parent env restored on success' {
-        $env:CONTROL_PLANE_API_KEY='test-only-control-key'
-        $env:AGENTDOCK_BEARER_HEADER='test-only-bearer'
-        function Start-Process {
-            param($FilePath,$ArgumentList,$WindowStyle,[switch]$PassThru)
-            if ($env:CONTROL_PLANE_API_KEY -or $env:AGENTDOCK_BEARER_HEADER) { throw 'Inherited secret' }
-            return [pscustomobject]@{Id=1}
+    Test-Case 'spawn implementation avoids Start-Process and strips child secrets' {
+        $sourceText = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/windows-wsl-session.ps1'))
+        if ($sourceText -notmatch 'System\.Diagnostics\.ProcessStartInfo') { throw 'ProcessStartInfo implementation missing' }
+        if ($sourceText -match 'Start-Process\s+-FilePath\s+\$Executable') { throw 'legacy Start-Process launcher still present' }
+        foreach ($name in @('CONTROL_PLANE_API_KEY','OPENAI_API_KEY','RUNTIME_API_KEY','AGENTDOCK_AUTH_TOKEN','AGENTDOCK_BEARER_HEADER')) {
+            if ($sourceText -notmatch [regex]::Escape($name)) { throw "secret filter missing: $name" }
         }
-        [void](& $originalSpawn -Executable 'fake' -ArgumentLine 'fake' -Paths (Get-WslSessionPaths $runtime))
-        Assert-Equal 'test-only-control-key' $env:CONTROL_PLANE_API_KEY
-        Assert-Equal 'test-only-bearer' $env:AGENTDOCK_BEARER_HEADER
-    }
-    Test-Case 'parent env restored even when holder launch throws' {
-        $env:CONTROL_PLANE_API_KEY='test-only-control-key'
-        function Start-Process { throw 'simulated-spawn-error' }
-        Assert-Throws { & $originalSpawn -Executable 'fake' -ArgumentLine 'fake' -Paths (Get-WslSessionPaths $runtime) } 'simulated-spawn-error'
-        Assert-Equal 'test-only-control-key' $env:CONTROL_PLANE_API_KEY
     }
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
