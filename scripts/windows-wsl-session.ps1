@@ -23,12 +23,10 @@ function Read-WslSessionRecord([string]$RuntimeDir) {
 function Get-WslSessionProcess($Record) {
     # A PID alone is not enough: Windows may have reused it after a reboot.
     try {
-        if ($null -eq $Record -or $Record.Marker -notmatch '^[0-9a-f]{32}$' -or [int]$Record.ProcessId -le 0) { return $null }
+        if ($null -eq $Record -or [int]$Record.ProcessId -le 0 -or [string]::IsNullOrWhiteSpace([string]$Record.Distro)) { return $null }
         $p = Get-Process -Id ([int]$Record.ProcessId) -ErrorAction Stop
         if (-not [string]::Equals($p.Path, $Record.Executable, [StringComparison]::OrdinalIgnoreCase)) { return $null }
         if ($p.StartTime.ToUniversalTime().Ticks.ToString() -ne [string]$Record.StartTicks) { return $null }
-        $cim = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$Record.ProcessId) -ErrorAction Stop
-        if ([string]::IsNullOrWhiteSpace($cim.CommandLine) -or -not $cim.CommandLine.Contains([string]$Record.Marker)) { return $null }
         return $p
     } catch { return $null }
 }
@@ -116,48 +114,49 @@ function Start-AgentDockWslSession([string]$RuntimeDir,[string]$HelperScript) {
         $distro = Assert-WslSessionDefault $RuntimeDir
         $old = Read-WslSessionRecord $RuntimeDir
         $existing = Get-WslSessionProcess $old
-        if ($null -ne $existing -and (Test-Path -LiteralPath $paths.Lease)) {
-            if ([IO.File]::ReadAllText($paths.Lease).Trim() -eq $old.Marker) {
-                Write-Host "WSL session : RUNNING ($distro; reused)"
-                return
-            }
+        if ($null -ne $existing) {
+            Write-Host "WSL session : RUNNING ($distro; reused)"
+            return
         }
-        if (-not (Test-Path -LiteralPath $HelperScript -PathType Leaf)) { throw 'Missing scripts/wsl-session.sh; pull the complete update.' }
+
         $exe = Resolve-WslSessionExecutable
-        $linuxHelper = Invoke-WslSessionText -WslArguments @('--distribution',$distro,'--exec','wslpath','-a','-u',[IO.Path]::GetFullPath($HelperScript))
-        $linuxLease = Invoke-WslSessionText -WslArguments @('--distribution',$distro,'--exec','wslpath','-a','-u',[IO.Path]::GetFullPath($paths.Lease))
-        $linuxReady = Invoke-WslSessionText -WslArguments @('--distribution',$distro,'--exec','wslpath','-a','-u',[IO.Path]::GetFullPath($paths.Ready))
-        $marker = [Guid]::NewGuid().ToString('N')
-        Remove-Item -LiteralPath $paths.Ready -Force -ErrorAction SilentlyContinue
-        [IO.File]::WriteAllText($paths.Lease,$marker,[Text.Encoding]::ASCII)
-        $arguments = @('--distribution',$distro,'--exec','sh',$linuxHelper,$linuxLease,$linuxReady,$marker)
+
+        # No shell, no project path, no mounted-drive helper and no readiness
+        # file. wsl.exe stays attached to /usr/bin/sleep for the lifetime of
+        # this managed holder process.
+        $arguments = @('--distribution',$distro,'--exec','sleep','infinity')
         $line = ($arguments | ForEach-Object { Quote-WslSessionArgument $_ }) -join ' '
+
         $p = $null
         try {
             $p = New-WslSessionProcess -Executable $exe -ArgumentLine $line -Paths $paths
-            $record = [pscustomobject]@{ ProcessId=$p.Id; StartTicks=$p.StartTime.ToUniversalTime().Ticks.ToString(); Executable=$exe; Distro=$distro; Marker=$marker }
-            [IO.File]::WriteAllText($paths.State,($record | ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))
-            for ($i=0; $i -lt 120; $i++) {
-                $p.Refresh()
-                if ($p.HasExited) { throw 'WSL foreground session exited before readiness.' }
-                if ((Test-Path -LiteralPath $paths.Ready) -and ([IO.File]::ReadAllText($paths.Ready).Trim() -eq $marker)) {
-                    Write-Host "WSL session : RUNNING ($distro; managed)"
-                    return
-                }
-                Start-Sleep -Milliseconds 500
+            Start-Sleep -Milliseconds 1000
+            $p.Refresh()
+            if ($p.HasExited) {
+                throw ("WSL keepalive process exited immediately with code {0}. Verify that 'wsl.exe --distribution {1} --exec sleep infinity' stays running when executed manually." -f $p.ExitCode,$distro)
             }
-            throw 'WSL foreground session did not become ready within 60 seconds.'
+
+            $record = [pscustomobject]@{
+                ProcessId=$p.Id
+                StartTicks=$p.StartTime.ToUniversalTime().Ticks.ToString()
+                Executable=$exe
+                Distro=$distro
+            }
+            [IO.File]::WriteAllText($paths.State,($record | ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))
+            Remove-Item -LiteralPath $paths.Lease,$paths.Ready -Force -ErrorAction SilentlyContinue
+            Write-Host "WSL session : RUNNING ($distro; managed)"
         } catch {
-            # Revoke only this lease; never kill a distro or an unrelated process.
-            if ((Test-Path -LiteralPath $paths.Lease) -and [IO.File]::ReadAllText($paths.Lease).Trim() -eq $marker) { Remove-Item -LiteralPath $paths.Lease -Force }
-            Remove-Item -LiteralPath $paths.Ready -Force -ErrorAction SilentlyContinue
             try { [IO.File]::WriteAllText($paths.Err,$_.Exception.ToString(),[Text.Encoding]::UTF8) } catch {}
-            $owned = Get-WslSessionProcess (Read-WslSessionRecord $RuntimeDir)
-            if ($null -ne $owned) { Stop-Process -Id $owned.Id -ErrorAction SilentlyContinue }
-            Remove-Item -LiteralPath $paths.State -Force -ErrorAction SilentlyContinue
+            if ($null -ne $p) {
+                try { if (-not $p.HasExited) { $p.Kill() } } catch {}
+                try { $p.Dispose() } catch {}
+            }
+            Remove-Item -LiteralPath $paths.State,$paths.Lease,$paths.Ready -Force -ErrorAction SilentlyContinue
             throw ("WSL keepalive failed. Check .runtime/wsl-session.err.log. " + $_.Exception.Message)
         }
-    } finally { $lock.Dispose() }
+    } finally {
+        $lock.Dispose()
+    }
 }
 
 function Stop-AgentDockWslSession([string]$RuntimeDir) {
@@ -166,17 +165,15 @@ function Stop-AgentDockWslSession([string]$RuntimeDir) {
     $lock = [IO.File]::Open($paths.Lock,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
     try {
         $record = Read-WslSessionRecord $RuntimeDir
-        Remove-Item -LiteralPath $paths.Lease -Force -ErrorAction SilentlyContinue
-        for ($i=0; $i -lt 20; $i++) {
-            $p = Get-WslSessionProcess $record
-            if ($null -eq $p) { break }
-            Start-Sleep -Milliseconds 250
-        }
         $p = Get-WslSessionProcess $record
-        if ($null -ne $p) { Stop-Process -Id $p.Id -ErrorAction Stop }
-        Remove-Item -LiteralPath $paths.State,$paths.Ready -Force -ErrorAction SilentlyContinue
+        if ($null -ne $p) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -LiteralPath $paths.State,$paths.Lease,$paths.Ready -Force -ErrorAction SilentlyContinue
         Write-Host 'WSL session : RELEASED (other WSL sessions were not stopped)'
-    } finally { $lock.Dispose() }
+    } finally {
+        $lock.Dispose()
+    }
 }
 
 function Show-AgentDockWslSession([string]$RuntimeDir) {

@@ -28,17 +28,14 @@ function Invoke-WslSessionText([string[]]$WslArguments) {
     throw 'Unexpected WSL command in test'
 }
 function Get-Process { param($Id,$ErrorAction); if (-not $script:Live) { throw 'not running' }; return $script:Process }
-function Get-CimInstance { param($ClassName,$Filter,$ErrorAction); return [pscustomobject]@{CommandLine=$script:CommandLine} }
-function Start-Sleep { param($Milliseconds); if (-not (Test-Path -LiteralPath (Get-WslSessionPaths $runtime).Lease)) { $script:Live=$false } }
-function Stop-Process { param($Id,$ErrorAction); $script:Stops++; $script:Live=$false }
+function Start-Sleep { param($Milliseconds) }
+function Stop-Process { param($Id,[switch]$Force,$ErrorAction); $script:Stops++; $script:Live=$false }
 function New-WslSessionProcess([string]$Executable,[string]$ArgumentLine,$Paths) {
     $script:Spawns++
     $script:CommandLine=$ArgumentLine
     $script:Live=$true
     $script:Process = [pscustomobject]@{Id=4242;StartTime=[DateTime]::Now;Path=$Executable;HasExited=$false}
     $script:Process | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
-    $marker = [IO.File]::ReadAllText($Paths.Lease)
-    [IO.File]::WriteAllText($Paths.Ready,$marker)
     return $script:Process
 }
 function Reset-Test {
@@ -63,9 +60,9 @@ try {
         $record=Read-WslSessionRecord $runtime
         Assert-Equal 1 $script:Spawns
         Assert-Equal 'Ubuntu-22.04' $record.Distro
-        Assert-Equal $record.Marker ([IO.File]::ReadAllText((Get-WslSessionPaths $runtime).Lease))
         Assert-Equal 4242 (Get-WslSessionProcess $record).Id
-        if ($script:CommandLine -match 'root|sudo|--shutdown|--terminate') { throw 'Privileged or destructive command detected' }
+        if ($script:CommandLine -match 'root|sudo|--shutdown|--terminate|sh|-c') { throw 'Privileged or shell command detected' }
+        if ($script:CommandLine -notmatch 'sleep' -or $script:CommandLine -notmatch 'infinity') { throw 'Direct sleep holder missing' }
     }
     Test-Case 'repeated start and restart reuse holder rather than spawn duplicates' {
         Start-AgentDockWslSession $runtime $helper
@@ -100,25 +97,12 @@ try {
         $script:Process.Path='C:\other\wsl.exe'
         Assert-Equal $null (Get-WslSessionProcess $record)
     }
-    Test-Case 'nonce must be present in live process command line' {
-        Start-AgentDockWslSession $runtime $helper
-        $script:CommandLine='unrelated WSL command'
-        Assert-Equal $null (Get-WslSessionProcess (Read-WslSessionRecord $runtime))
-    }
-    Test-Case 'stop revokes lease and lets foreground helper exit' {
+    Test-Case 'stop terminates only the recorded holder process' {
         Start-AgentDockWslSession $runtime $helper
         Stop-AgentDockWslSession $runtime
         Assert-Equal $false $script:Live
-        Assert-Equal $false (Test-Path -LiteralPath (Get-WslSessionPaths $runtime).Lease)
         Assert-Equal $false (Test-Path -LiteralPath (Get-WslSessionPaths $runtime).State)
-        Assert-Equal 0 $script:Stops
-    }
-    Test-Case 'stop does not kill unrelated process from reused PID' {
-        Start-AgentDockWslSession $runtime $helper
-        $script:CommandLine='unrelated WSL command'
-        Stop-AgentDockWslSession $runtime
-        Assert-Equal 0 $script:Stops
-        Assert-Equal $true $script:Live
+        Assert-Equal 1 $script:Stops
     }
     Test-Case 'status lists running distros without a Linux exec or wake command' {
         Start-AgentDockWslSession $runtime $helper
@@ -132,10 +116,6 @@ try {
         Show-AgentDockWslSession $runtime
         Stop-AgentDockWslSession $runtime
         Assert-Equal 0 $script:Calls.Count
-        Assert-Equal 0 $script:Spawns
-    }
-    Test-Case 'missing helper fails clearly without a live lease' {
-        Assert-Throws { Start-AgentDockWslSession $runtime ($helper+'missing') } 'Missing scripts/wsl-session.sh'
         Assert-Equal 0 $script:Spawns
     }
     Test-Case 'argument quoting preserves spaces and rejects injection/newlines' {
