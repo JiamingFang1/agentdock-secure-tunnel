@@ -39,7 +39,7 @@ function New-WslSessionProcess([string]$Executable,[string]$ArgumentLine,$Paths)
     $script:Process = [pscustomobject]@{Id=4242;StartTime=[DateTime]::Now;Path=$Executable;HasExited=$false}
     $script:Process | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
     $marker = [IO.File]::ReadAllText($Paths.Lease)
-    [IO.File]::WriteAllText($Paths.Out,"READY $marker`n")
+    [IO.File]::WriteAllText($Paths.Ready,$marker)
     return $script:Process
 }
 function Reset-Test {
@@ -148,7 +148,7 @@ try {
         $env:CONTROL_PLANE_API_KEY='test-only-control-key'
         $env:AGENTDOCK_BEARER_HEADER='test-only-bearer'
         function Start-Process {
-            param($FilePath,$ArgumentList,$WindowStyle,[switch]$PassThru,$RedirectStandardOutput,$RedirectStandardError)
+            param($FilePath,$ArgumentList,$WindowStyle,[switch]$PassThru)
             if ($env:CONTROL_PLANE_API_KEY -or $env:AGENTDOCK_BEARER_HEADER) { throw 'Inherited secret' }
             return [pscustomobject]@{Id=1}
         }

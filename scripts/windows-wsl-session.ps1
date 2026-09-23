@@ -7,6 +7,7 @@ function Get-WslSessionPaths([string]$RuntimeDir) {
         Lease = Join-Path $RuntimeDir 'wsl-session.lease'
         Out = Join-Path $RuntimeDir 'wsl-session.out.log'
         Err = Join-Path $RuntimeDir 'wsl-session.err.log'
+        Ready = Join-Path $RuntimeDir 'wsl-session.ready'
         Lock = Join-Path $RuntimeDir 'wsl-session.lock'
     }
 }
@@ -53,7 +54,7 @@ function New-WslSessionProcess([string]$Executable,[string]$ArgumentLine,$Paths)
         [Environment]::SetEnvironmentVariable($name,$null,'Process')
     }
     try {
-        return (Start-Process -FilePath $Executable -ArgumentList $ArgumentLine -WindowStyle Hidden -PassThru -RedirectStandardOutput $Paths.Out -RedirectStandardError $Paths.Err)
+        return (Start-Process -FilePath $Executable -ArgumentList $ArgumentLine -WindowStyle Hidden -PassThru)
     } finally {
         foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name,$saved[$name],'Process') }
     }
@@ -89,9 +90,11 @@ function Start-AgentDockWslSession([string]$RuntimeDir,[string]$HelperScript) {
         $exe = (Get-Command wsl.exe -CommandType Application -ErrorAction Stop).Source
         $linuxHelper = Invoke-WslSessionText -WslArguments @('--distribution',$distro,'--exec','wslpath','-a','-u',[IO.Path]::GetFullPath($HelperScript))
         $linuxLease = Invoke-WslSessionText -WslArguments @('--distribution',$distro,'--exec','wslpath','-a','-u',[IO.Path]::GetFullPath($paths.Lease))
+        $linuxReady = Invoke-WslSessionText -WslArguments @('--distribution',$distro,'--exec','wslpath','-a','-u',[IO.Path]::GetFullPath($paths.Ready))
         $marker = [Guid]::NewGuid().ToString('N')
+        Remove-Item -LiteralPath $paths.Ready -Force -ErrorAction SilentlyContinue
         [IO.File]::WriteAllText($paths.Lease,$marker,[Text.Encoding]::ASCII)
-        $arguments = @('--distribution',$distro,'--exec','sh',$linuxHelper,$linuxLease,$marker)
+        $arguments = @('--distribution',$distro,'--exec','sh',$linuxHelper,$linuxLease,$linuxReady,$marker)
         $line = ($arguments | ForEach-Object { Quote-WslSessionArgument $_ }) -join ' '
         $p = $null
         try {
@@ -101,7 +104,7 @@ function Start-AgentDockWslSession([string]$RuntimeDir,[string]$HelperScript) {
             for ($i=0; $i -lt 120; $i++) {
                 $p.Refresh()
                 if ($p.HasExited) { throw 'WSL foreground session exited before readiness.' }
-                if ((Test-Path -LiteralPath $paths.Out) -and ([IO.File]::ReadAllText($paths.Out).Contains("READY $marker"))) {
+                if ((Test-Path -LiteralPath $paths.Ready) -and ([IO.File]::ReadAllText($paths.Ready).Trim() -eq $marker)) {
                     Write-Host "WSL session : RUNNING ($distro; managed)"
                     return
                 }
@@ -111,6 +114,8 @@ function Start-AgentDockWslSession([string]$RuntimeDir,[string]$HelperScript) {
         } catch {
             # Revoke only this lease; never kill a distro or an unrelated process.
             if ((Test-Path -LiteralPath $paths.Lease) -and [IO.File]::ReadAllText($paths.Lease).Trim() -eq $marker) { Remove-Item -LiteralPath $paths.Lease -Force }
+            Remove-Item -LiteralPath $paths.Ready -Force -ErrorAction SilentlyContinue
+            try { [IO.File]::WriteAllText($paths.Err,$_.Exception.ToString(),[Text.Encoding]::UTF8) } catch {}
             $owned = Get-WslSessionProcess (Read-WslSessionRecord $RuntimeDir)
             if ($null -ne $owned) { Stop-Process -Id $owned.Id -ErrorAction SilentlyContinue }
             Remove-Item -LiteralPath $paths.State -Force -ErrorAction SilentlyContinue
@@ -133,7 +138,7 @@ function Stop-AgentDockWslSession([string]$RuntimeDir) {
         }
         $p = Get-WslSessionProcess $record
         if ($null -ne $p) { Stop-Process -Id $p.Id -ErrorAction Stop }
-        Remove-Item -LiteralPath $paths.State -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $paths.State,$paths.Ready -Force -ErrorAction SilentlyContinue
         Write-Host 'WSL session : RELEASED (other WSL sessions were not stopped)'
     } finally { $lock.Dispose() }
 }
