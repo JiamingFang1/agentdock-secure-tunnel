@@ -1,8 +1,6 @@
 """Exercise the actual POSIX lease helper; never start Docker or WSL."""
 import os
 from pathlib import Path
-import select
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -17,11 +15,17 @@ class LeaseHelperTests(unittest.TestCase):
             lease = Path(directory) / 'lease file'
             marker = 'a' * 32
             lease.write_text(marker)
-            process = subprocess.Popen(['sh', str(ROOT / 'scripts/wsl-session.sh'), str(lease), marker], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            ready = Path(directory) / 'ready file'
+            process = subprocess.Popen(['sh', str(ROOT / 'scripts/wsl-session.sh'), str(lease), str(ready), marker], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
-                readable, _, _ = select.select([process.stdout], [], [], 5)
-                self.assertTrue(readable, 'helper did not acknowledge its lease')
-                self.assertEqual(process.stdout.readline().strip(), 'READY ' + marker)
+                for _ in range(100):
+                    if ready.exists() and ready.read_text().strip() == marker:
+                        break
+                    if process.poll() is not None:
+                        break
+                    import time; time.sleep(0.05)
+                self.assertTrue(ready.exists(), 'helper did not create ready file')
+                self.assertEqual(ready.read_text().strip(), marker)
                 self.assertIsNone(process.poll())
                 if replacement is None:
                     lease.unlink()
@@ -42,9 +46,11 @@ class LeaseHelperTests(unittest.TestCase):
         self.run_holder('b' * 32)
 
     def test_missing_lease_does_not_claim_ready(self):
-        result = subprocess.run(['sh', str(ROOT / 'scripts/wsl-session.sh'), '/nonexistent/agentdock-lease', 'a' * 32], capture_output=True, timeout=5)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn(b'READY', result.stdout)
+        with tempfile.TemporaryDirectory(prefix='agentdock lease missing ') as directory:
+            ready = Path(directory) / 'ready'
+            result = subprocess.run(['sh', str(ROOT / 'scripts/wsl-session.sh'), '/nonexistent/agentdock-lease', str(ready), 'a' * 32], capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(ready.exists())
 
 
 if __name__ == '__main__':
