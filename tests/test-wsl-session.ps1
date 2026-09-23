@@ -75,7 +75,8 @@ try {
         $script:Live=$false
         Start-AgentDockWslSession $runtime $helper
         Assert-Equal 2 $script:Spawns
-        if ((Read-WslSessionRecord $runtime).Marker -eq $old.Marker) { throw 'Lease was not renewed' }
+        $new=Read-WslSessionRecord $runtime
+        if ($new.StartTicks -eq $old.StartTicks) { throw 'Holder identity was not renewed' }
     }
     Test-Case 'changed default distro fails before touching existing holder' {
         Start-AgentDockWslSession $runtime $helper
