@@ -15,7 +15,6 @@ jobs:
       - name: Check Bash syntax and launcher mode
         run: |
           bash -n agentdock scripts/bootstrap-tunnel.sh scripts/agentdock.sh
-          sh -n scripts/wsl-session.sh
           test -x agentdock
       - name: Offline download and launcher regression tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
@@ -45,9 +44,3 @@ jobs:
       - name: WSL detection regression tests (PowerShell 7)
         shell: pwsh
         run: ./tests/test-wsl-detection.ps1
-      - name: WSL session lifecycle (Windows PowerShell 5.1)
-        shell: powershell
-        run: ./tests/test-wsl-session.ps1
-      - name: WSL session lifecycle (PowerShell 7)
-        shell: pwsh
-        run: ./tests/test-wsl-session.ps1

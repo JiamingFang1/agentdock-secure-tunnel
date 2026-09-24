@@ -26,6 +26,12 @@ class StaticEntryTests(unittest.TestCase):
         self.assertIn('"%~dp0scripts\\windows-entry.ps1" %*', text)
         self.assertRegex(text, r"(?s)\(\s+.*-File.*\n\s+call exit /b %%errorlevel%%\s+\)")
         self.assertIn("*.cmd text eol=crlf", (ROOT / ".gitattributes").read_text())
+    def test_windows_entry_does_not_manage_wsl_lifetime(self):
+        text = (ROOT / "scripts/windows-entry.ps1").read_text(encoding="utf-8-sig")
+        self.assertNotIn("Start-AgentDockWslSession", text)
+        self.assertNotIn("Stop-AgentDockWslSession", text)
+        self.assertNotIn("windows-wsl-session.ps1", text)
+
 
 
 @unittest.skipUnless(WINDOWS, "Requires real Windows CMD and Windows PowerShell 5.1")

@@ -36,6 +36,12 @@ wsl.exe -u root --exec docker compose version
 
 第一条是发行版清单（`Stopped` 不等于没安装），第二条验证默认发行版和用户，后两条验证默认发行版里的 Docker/Compose。多个发行版时请确认默认发行版是此前部署 Docker 的那个；本次修复不会更改默认发行版或安装新的发行版。
 
+## WSL 生命周期
+
+`docker-wsl` 模式只检测并使用当前账号的默认 WSL 发行版及其 Docker Engine。项目不会额外启动 WSL 保活进程，不会执行 `wsl --shutdown` / `--terminate`，也不会修改 `.wslconfig`、`/etc/wsl.conf` 或系统电源设置。
+
+如果 WSL 或 Docker 不可用，`start/restart/apply` 应直接报告预检失败；不要因为一次启动失败重装 WSL。先用 `wsl.exe --list --verbose`、`wsl.exe -u root --exec docker info` 和 `wsl.exe -u root --exec docker compose version` 检查现有环境。
+
 ## 如何看结果
 
 | 输出 | 含义 |

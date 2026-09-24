@@ -37,26 +37,7 @@ try {
         Write-Host '==> Preparing tunnel-client'
         Invoke-ScriptStep -Path $BootstrapScript -Arguments @()
     }
-
-    $modePath = Join-Path $Runtime 'deployment.txt'
-    $wslManaged = (Test-Path -LiteralPath $modePath -PathType Leaf) -and ((Get-Content -LiteralPath $modePath -Raw).Trim() -eq 'docker-wsl')
-    if ($wslManaged -and $command -in @('start','restart','apply','stop','status')) {
-        . (Join-Path $PSScriptRoot 'windows-wsl-session.ps1')
-        if ($command -in @('start','restart','apply')) {
-            # Start BEFORE Docker/preflight. The attached wsl.exe stays alive
-            # after this entry process returns; restart keeps the same holder.
-            Start-AgentDockWslSession -RuntimeDir $Runtime -HelperScript (Join-Path $PSScriptRoot 'wsl-session.sh')
-        } elseif ($command -eq 'stop' -and (Test-Path -LiteralPath (Join-Path $Runtime 'wsl-session.json'))) {
-            [void](Assert-WslSessionDefault -RuntimeDir $Runtime)
-        }
-    }
     Invoke-ScriptStep -Path $MainScript -Arguments @($command)
-    if ($wslManaged -and $command -eq 'stop') {
-        # Only release after services stopped successfully. A failed stop keeps
-        # the session available for diagnosis; it never shuts down all of WSL.
-        Stop-AgentDockWslSession -RuntimeDir $Runtime
-    }
-    if ($wslManaged -and $command -eq 'status') { Show-AgentDockWslSession -RuntimeDir $Runtime }
 
     if ($command -in @('start','restart','apply')) {
         if (-not (Wait-ControlPlaneConnected -RuntimeDir $Runtime)) {
@@ -76,8 +57,9 @@ try {
     }
     exit 0
 } catch {
+    # Write-Error under ErrorActionPreference=Stop would throw before the handler
+    # can finish. Do not auto-dump logs or configuration that may contain secrets.
     [Console]::Error.WriteLine("ERROR: Windows command '$command' failed. " + $_.Exception.Message)
     [Console]::Error.WriteLine('No configuration or runtime data was deleted. Run .\agentdock.cmd logs for service diagnostics; redact secrets before sharing.')
-    [Console]::Error.WriteLine('An existing WSL keepalive is retained on service errors. Use .\agentdock.cmd stop after diagnosis to release it.')
     exit $script:EntryExitCode
 }
