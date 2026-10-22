@@ -812,11 +812,17 @@ function Write-Compose($Config,[string]$Mode,[string]$Token) {
 
 function Invoke-Compose([string[]]$ComposeArgs) {
     $mode = Get-InstalledMode
+    $override = Join-Path $Runtime 'compose.local.yaml'
     if ($mode -eq 'docker-windows') {
-        & docker compose -f $Compose @ComposeArgs
+        $files = @('-f', $Compose)
+        if (Test-Path -LiteralPath $override -PathType Leaf) { $files += @('-f', $override) }
+        & docker compose @files @ComposeArgs
     } elseif ($mode -eq 'docker-wsl') {
-        $cp = Convert-ToWslPath $Compose
-        $wslArgs = @('-u','root','--exec','docker','compose','-f',$cp) + $ComposeArgs
+        $files = @('-f', (Convert-ToWslPath $Compose))
+        if (Test-Path -LiteralPath $override -PathType Leaf) {
+            $files += @('-f', (Convert-ToWslPath $override))
+        }
+        $wslArgs = @('-u','root','--exec','docker','compose') + $files + $ComposeArgs
         & wsl.exe @wslArgs
     } else {
         Fail 'Current deployment is not Docker mode.'
