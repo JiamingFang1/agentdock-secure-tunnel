@@ -10,7 +10,21 @@ function Normalize-ProxyUrl([string]$Value) {
 function Get-SystemProxy {
     try {
         $settings = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
-        if ([int]$settings.ProxyEnable -ne 1) { return $null }
+        if ([int]$settings.ProxyEnable -ne 1) {
+            # Automatic proxy settings (PAC/WPAD) are resolved by Windows itself.
+            # Query a public HTTPS destination; never print or persist the result.
+            # AutoDetect is not always represented as a registry value; rely on
+            # the Windows proxy resolver rather than assuming an absent field
+            # means PAC/WPAD is disabled.
+            $target = [Uri]'https://api.openai.com/'
+            $resolved = [Net.WebRequest]::GetSystemWebProxy().GetProxy($target)
+            if ($null -eq $resolved -or $resolved.AbsoluteUri -eq $target.AbsoluteUri) {
+                return $null
+            }
+            if ($resolved.Scheme -notin @('http','https')) { return $null }
+            $url = $resolved.AbsoluteUri
+            return [pscustomobject]@{ Http=$url; Https=$url }
+        }
         $raw = [string]$settings.ProxyServer
         if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
         $http = $null

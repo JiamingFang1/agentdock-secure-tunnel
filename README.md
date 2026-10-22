@@ -184,6 +184,20 @@ macOS / Linux：
 ./agentdock apply
 ```
 
+## Windows 本机 Web 管理器（可选）
+
+安装 Python 3.8+ 后执行 `agentdock-web.cmd`，或通过 `agentdock.cmd start` 自动启动管理器。
+浏览器访问 <http://127.0.0.1:18880/>。可查看工作区、切换默认工作区、
+执行启动/停止/重启/应用配置及读取经过脱敏的服务状态。
+该界面仅监听本机回环地址，不通过 MCP Tunnel 暴露。
+详细说明见 [Web 管理器](docs/web-manager.md)。
+
+Windows + WSL 的工作区会在启动前检查读、写、进入权限。
+需要 SSHFS 等自定义挂载时，可自行提供本地忽略文件
+`.runtime/wsl-before-compose.sh`；它将以 WSL root 身份运行，因此仅允许可信内容。
+Docker 配置扩展可放入忽略文件 `.runtime/compose.local.yaml`。
+远程目录挂载示例与安全要求见 [WSL SSHFS](docs/local-ssh.md)。
+
 ## 5. ChatGPT 网页端配置
 
 保持 AgentDock 与 `tunnel-client` 运行，然后在 ChatGPT 网页端打开 **Settings → Apps / Connectors**（具体名称可能随 UI 版本变化）。

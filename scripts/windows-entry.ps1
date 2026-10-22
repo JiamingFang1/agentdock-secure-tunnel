@@ -40,6 +40,20 @@ try {
     Invoke-ScriptStep -Path $MainScript -Arguments @($command)
 
     if ($command -in @('start','restart','apply')) {
+        $manager = Join-Path $PSScriptRoot 'windows-web-manager.ps1'
+        if (Test-Path -LiteralPath $manager -PathType Leaf) {
+            try {
+                & $ChildPowerShell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $manager
+                if ($LASTEXITCODE -ne 0) {
+                    [Console]::Error.WriteLine('Web Manager did not start. AgentDock services remain available.')
+                }
+            } catch {
+                [Console]::Error.WriteLine('Web Manager unavailable. Use the command-line launcher instead.')
+            }
+        }
+    }
+
+    if ($command -in @('start','restart','apply')) {
         if (-not (Wait-ControlPlaneConnected -RuntimeDir $Runtime)) {
             Write-Host 'Control Plane : UNVERIFIED' -ForegroundColor Yellow
             [Console]::Error.WriteLine('Local services may be running, but this tunnel has no verified recent control-plane poll. They have NOT been stopped.')

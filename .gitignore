@@ -2,3 +2,7 @@ config.yaml
 .runtime/
 .DS_Store
 Thumbs.db
+
+# Python test and Web Manager bytecode
+__pycache__/
+*.py[cod]
