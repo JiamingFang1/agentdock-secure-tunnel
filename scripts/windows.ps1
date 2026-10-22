@@ -753,8 +753,7 @@ function Invoke-OptionalWslInitialization([string]$Mode) {
 
 function Assert-DockerConfig($Config,[string]$Mode) {
     [void](Get-DockerRuntimeIdentity $Mode)
-    Invoke-WslWorkspacePreflight $Config $Mode
-    $defaultWs = Get-Workspace $Config $Config.DefaultWorkspace
+    # Check each normalized workspace via wsl.exe directly. Avoid passing a\n    # PowerShell-generated manifest through Windows/WSL text encodings.\n    Test-WslWorkspaceAccess $Config $Mode\n    $defaultWs = Get-Workspace $Config $Config.DefaultWorkspace
     if ($defaultWs.Mode -ne 'rw') {
         Fail "default_workspace '$($Config.DefaultWorkspace)' must use mode: rw because AgentDock secures its default directory at startup."
     }
