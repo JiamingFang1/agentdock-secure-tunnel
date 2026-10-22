@@ -19,6 +19,8 @@ $NativeErr = Join-Path $Runtime 'agentdock-native.err.log'
 $TunnelExe = Join-Path $Bin 'tunnel-client.exe'
 $AgentDockExe = Join-Path $Bin 'agentdock.exe'
 $AgentDockHome = Join-Path $Runtime 'agentdock-home'
+$script:CachedConfig = $null
+$script:CachedWslIdentity = $null
 
 function Fail([string]$Message) { throw $Message }
 
@@ -44,6 +46,7 @@ function Get-AutoWorkspaceName([string]$Path) {
 }
 
 function Read-Config {
+    if ($null -ne $script:CachedConfig) { return $script:CachedConfig }
     if (-not (Test-Path $ConfigPath)) {
         Copy-Item (Join-Path $Root 'config.example.yaml') $ConfigPath
         Fail 'Created config.yaml. Edit it, then run again.'
@@ -117,7 +120,7 @@ function Read-Config {
     $port = 0
     if (-not [int]::TryParse([string]$top['agentdock_port'],[ref]$port) -or $port -lt 1 -or $port -gt 65535) { Fail 'agentdock_port must be 1-65535.' }
 
-    return [pscustomobject]@{
+    $script:CachedConfig = [pscustomobject]@{
         TunnelId=[string]$top['tunnel_id']
         RuntimeApiKey=[string]$top['runtime_api_key']
         Port=$port
@@ -126,6 +129,7 @@ function Read-Config {
         Workspaces=$workspaces
         HasWslWorkspace=[bool]($workspaces | Where-Object {$_.PathType -eq 'wsl'})
     }
+    return $script:CachedConfig
 }
 
 function Get-Workspace($Config,[string]$Name) {
@@ -647,6 +651,7 @@ function Convert-ToWslPath([string]$Path) {
 }
 
 function Get-WslRuntimeIdentity {
+    if ($null -ne $script:CachedWslIdentity) { return $script:CachedWslIdentity }
     $uid = Invoke-WslCapture -WslArgs @('--exec','id','-u')
     $gid = Invoke-WslCapture -WslArgs @('--exec','id','-g')
     if ([string]::IsNullOrWhiteSpace($uid) -or [string]::IsNullOrWhiteSpace($gid)) {
@@ -654,7 +659,8 @@ function Get-WslRuntimeIdentity {
     }
     if ($uid -notmatch '^\d+$' -or $gid -notmatch '^\d+$') { Fail "Invalid WSL UID/GID: $uid`:$gid" }
     if ($uid -eq '0') { Fail 'The default WSL user is root. Launch the WSL distribution once and configure a non-root default user before using Docker isolation.' }
-    return [pscustomobject]@{Uid=$uid;Gid=$gid}
+    $script:CachedWslIdentity = [pscustomobject]@{Uid=$uid;Gid=$gid}
+    return $script:CachedWslIdentity
 }
 
 function Get-DockerRuntimeIdentity([string]$Mode) {
@@ -881,6 +887,7 @@ function Wait-AgentDock([int]$Port) {
 }
 
 function Test-StartPreflight {
+    Write-Host '==> Validating configuration and runtime before changing services'
     $cfg = Read-Config
     Install-TunnelClient
     $mode = Get-InstalledMode
