@@ -22,6 +22,16 @@ class WorkspacePreflightTests(unittest.TestCase):
             result = self.invoke("ro\t" + td + "\n")
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_utf8_manifest_path_preserves_unicode(self):
+        with tempfile.TemporaryDirectory(prefix="workspace-检查-") as td:
+            manifest = Path(td) / "manifest.txt"
+            manifest.write_text("ro\\t" + td + "\\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", str(SCRIPT), str(manifest)], text=True,
+                capture_output=True, timeout=15, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_missing_workspace_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             result = self.invoke("rw\t" + str(Path(td) / "absent") + "\n")
