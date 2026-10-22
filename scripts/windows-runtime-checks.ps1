@@ -13,10 +13,9 @@ function Get-SystemProxy {
         if ([int]$settings.ProxyEnable -ne 1) {
             # Automatic proxy settings (PAC/WPAD) are resolved by Windows itself.
             # Query a public HTTPS destination; never print or persist the result.
-            $automatic = ([string]$settings.AutoConfigURL).Trim()
-            $autoDetect = $false
-            try { $autoDetect = (([int]$settings.AutoDetect) -eq 1) } catch {}
-            if (-not $automatic -and -not $autoDetect) { return $null }
+            # AutoDetect is not always represented as a registry value; rely on
+            # the Windows proxy resolver rather than assuming an absent field
+            # means PAC/WPAD is disabled.
             $target = [Uri]'https://api.openai.com/'
             $resolved = [Net.WebRequest]::GetSystemWebProxy().GetProxy($target)
             if ($null -eq $resolved -or $resolved.AbsoluteUri -eq $target.AbsoluteUri) {
