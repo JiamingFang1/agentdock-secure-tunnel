@@ -18,7 +18,8 @@ if (-not $python) {
 New-Item -ItemType Directory -Force -Path $Runtime | Out-Null
 $stdout = Join-Path $Runtime 'web-manager.out.log'
 $stderr = Join-Path $Runtime 'web-manager.err.log'
-$p = Start-Process -FilePath $python.Source -ArgumentList @($Script) -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+$quotedScript = '"' + $Script.Replace('"', '') + '"'
+$p = Start-Process -FilePath $python.Source -ArgumentList $quotedScript -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 Set-Content -LiteralPath (Join-Path $Runtime 'web-manager.pid') -Value $p.Id -Encoding ASCII
 Start-Sleep -Milliseconds 300
 if ($p.HasExited) { exit 1 }
