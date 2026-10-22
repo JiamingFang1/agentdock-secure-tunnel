@@ -20,7 +20,7 @@ $TunnelExe = Join-Path $Bin 'tunnel-client.exe'
 $AgentDockExe = Join-Path $Bin 'agentdock.exe'
 $AgentDockHome = Join-Path $Runtime 'agentdock-home'
 $script:CachedConfig = $null
-$script:CachedWslIdentity = $null
+$script:CachedDockerIdentity = $null
 
 function Fail([string]$Message) { throw $Message }
 
@@ -651,7 +651,6 @@ function Convert-ToWslPath([string]$Path) {
 }
 
 function Get-WslRuntimeIdentity {
-    if ($null -ne $script:CachedWslIdentity) { return $script:CachedWslIdentity }
     $uid = Invoke-WslCapture -WslArgs @('--exec','id','-u')
     $gid = Invoke-WslCapture -WslArgs @('--exec','id','-g')
     if ([string]::IsNullOrWhiteSpace($uid) -or [string]::IsNullOrWhiteSpace($gid)) {
@@ -659,12 +658,16 @@ function Get-WslRuntimeIdentity {
     }
     if ($uid -notmatch '^\d+$' -or $gid -notmatch '^\d+$') { Fail "Invalid WSL UID/GID: $uid`:$gid" }
     if ($uid -eq '0') { Fail 'The default WSL user is root. Launch the WSL distribution once and configure a non-root default user before using Docker isolation.' }
-    $script:CachedWslIdentity = [pscustomobject]@{Uid=$uid;Gid=$gid}
-    return $script:CachedWslIdentity
+    return [pscustomobject]@{Uid=$uid;Gid=$gid}
 }
 
 function Get-DockerRuntimeIdentity([string]$Mode) {
-    if ($Mode -eq 'docker-wsl') { return Get-WslRuntimeIdentity }
+    if ($Mode -eq 'docker-wsl') {
+        if ($null -eq $script:CachedDockerIdentity) {
+            $script:CachedDockerIdentity = Get-WslRuntimeIdentity
+        }
+        return $script:CachedDockerIdentity
+    }
     if ($Mode -eq 'docker-windows') {
         # Docker Desktop exposes Windows bind mounts as root-owned inside Linux containers.
         # AgentDock intentionally chmods AGENTDOCK_DEFAULT_DIR during startup; running as
