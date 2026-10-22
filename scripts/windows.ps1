@@ -879,11 +879,27 @@ function Start-Tunnel($Config,[string]$Token) {
     }
 }
 
+function Test-LocalAgentDockHealth([int]$Port) {
+    # Invoke-WebRequest may inherit a Windows system proxy even for loopback.
+    # Health checks must connect directly and must not silently turn a proxy
+    # error into a misleading "STOPPED" state.
+    $request = [Net.WebRequest]::Create("http://127.0.0.1:$Port/healthz")
+    $request.Proxy = $null
+    $request.Timeout = 2000
+    $request.ReadWriteTimeout = 2000
+    try {
+        $response = $request.GetResponse()
+        try { return ([int]$response.StatusCode -eq 200) }
+        finally { $response.Close() }
+    } catch {
+        return $false
+    }
+}
+
 function Wait-AgentDock([int]$Port) {
     for ($i=0; $i -lt 50; $i++) {
         try {
-            $r = Invoke-WebRequest "http://127.0.0.1:$Port/healthz" -UseBasicParsing -TimeoutSec 2
-            if ($r.StatusCode -eq 200) { return }
+            if (Test-LocalAgentDockHealth $Port) { return }
         } catch {}
         Start-Sleep -Milliseconds 500
     }
@@ -974,8 +990,7 @@ function Status-Command {
     $a = 'STOPPED'
     $t = 'STOPPED'
     try {
-        $r = Invoke-WebRequest "http://127.0.0.1:$($cfg.Port)/healthz" -UseBasicParsing -TimeoutSec 2
-        if ($r.StatusCode -eq 200) { $a = 'RUNNING' }
+        if (Test-LocalAgentDockHealth $cfg.Port) { $a = 'RUNNING' }
     } catch {}
     if (Test-PidFile $TunnelPid) { $t = 'RUNNING' }
     $mode = if (Test-Path $ModePath) { Get-InstalledMode } else { 'NOT INSTALLED' }
