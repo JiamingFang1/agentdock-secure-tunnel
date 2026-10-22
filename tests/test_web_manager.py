@@ -43,6 +43,19 @@ workspaces:
         with self.assertRaises(ValueError):
             module.set_selected_workspace(text, "missing")
 
+    def test_status_is_redacted_to_known_labels(self):
+        module = load_manager()
+        from unittest.mock import patch
+        from subprocess import CompletedProcess
+        secret = "KEY_DO_NOT_RETURN_TEST"
+        output = "AgentDock : RUNNING\nTunnel    : RUNNING\nControl Plane : CONNECTED\n" + secret
+        with patch.object(module.subprocess, "run", return_value=CompletedProcess([], 0, output, "")):
+            result = module.execute("status")
+        self.assertEqual(result["agentdock"], "RUNNING")
+        self.assertEqual(result["tunnel"], "RUNNING")
+        self.assertEqual(result["control_plane"], "CONNECTED")
+        self.assertNotIn(secret, repr(result))
+
     def test_static_assets_present(self):
         for path in ("index.html", "app.js", "style.css"):
             self.assertTrue((ROOT / "scripts" / "manager" / path).is_file())
