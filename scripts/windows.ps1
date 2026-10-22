@@ -730,8 +730,8 @@ function Invoke-WslWorkspacePreflight($Config,[string]$Mode) {
             "$($_.Mode)`t$source"
         })
         [IO.File]::WriteAllLines($manifest, $rows, (New-Object Text.UTF8Encoding($false)))
-        Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 |
-            & wsl.exe --exec bash $tool
+        $wslManifest = Convert-ToWslPath $manifest
+        & wsl.exe --exec bash $tool $wslManifest
         if ($LASTEXITCODE -ne 0) { Fail 'WSL workspace permission preflight failed.' }
     } finally {
         Remove-Item -LiteralPath $manifest -Force -ErrorAction SilentlyContinue
