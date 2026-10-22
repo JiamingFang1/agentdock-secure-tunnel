@@ -106,7 +106,15 @@ def execute(command):
         stdin=subprocess.DEVNULL, timeout=120, check=False,
     )
     # Never return potentially sensitive command output through the Web API.
-    return {"ok": result.returncode == 0, "exit_code": result.returncode}
+    summary = {"ok": result.returncode == 0, "exit_code": result.returncode}
+    if command == "status":
+        for label, key in (("AgentDock", "agentdock"),
+                           ("Tunnel", "tunnel"),
+                           ("Control Plane", "control_plane")):
+            pattern = r"(?m)^" + re.escape(label) + r"\\s*:\\s*(RUNNING|STOPPED|CONNECTED|UNVERIFIED)\\s*$"
+            found = re.search(pattern, result.stdout)
+            summary[key] = found.group(1) if found else "UNKNOWN"
+    return summary
 
 
 class Manager(BaseHTTPRequestHandler):
