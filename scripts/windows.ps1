@@ -880,6 +880,7 @@ function Test-StartPreflight {
     $mode = Get-InstalledMode
     Assert-ModeAvailable $mode
     if ($mode -like 'docker-*') {
+        Invoke-OptionalWslInitialization $mode
         Assert-DockerConfig $cfg $mode
     } else {
         $ws = Get-Workspace $cfg $cfg.DefaultWorkspace
