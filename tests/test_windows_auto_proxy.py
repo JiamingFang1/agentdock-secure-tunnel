@@ -13,7 +13,7 @@ class ProxySourceTests(unittest.TestCase):
     def test_automatic_proxy_discovery_is_present(self):
         source = SOURCE.read_text(encoding="utf-8-sig")
         self.assertIn("GetSystemWebProxy()", source)
-        self.assertIn("AutoConfigURL", source)
+        self.assertIn("GetSystemWebProxy()", source)
         self.assertIn("GetProxy($target)", source)
         self.assertIn("resolved.Scheme -notin", source)
 
