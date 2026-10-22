@@ -111,7 +111,7 @@ def execute(command):
         for label, key in (("AgentDock", "agentdock"),
                            ("Tunnel", "tunnel"),
                            ("Control Plane", "control_plane")):
-            pattern = r"(?m)^" + re.escape(label) + r"\\s*:\\s*(RUNNING|STOPPED|CONNECTED|UNVERIFIED)\\s*$"
+            pattern = r"(?m)^" + re.escape(label) + r"\s*:\s*(RUNNING|STOPPED|CONNECTED|UNVERIFIED)\s*$"
             found = re.search(pattern, result.stdout)
             summary[key] = found.group(1) if found else "UNKNOWN"
     return summary
