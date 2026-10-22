@@ -43,7 +43,7 @@ try {
         $manager = Join-Path $PSScriptRoot 'windows-web-manager.ps1'
         if (Test-Path -LiteralPath $manager -PathType Leaf) {
             try {
-                & $manager
+                & $ChildPowerShell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $manager
                 if ($LASTEXITCODE -ne 0) {
                     [Console]::Error.WriteLine('Web Manager did not start. AgentDock services remain available.')
                 }
