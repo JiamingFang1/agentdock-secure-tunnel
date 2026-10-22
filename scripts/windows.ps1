@@ -904,6 +904,7 @@ function Install-Command {
     Set-Content $ModePath $mode -Encoding ASCII
     if ($mode -like 'docker-*') {
         Assert-ModeAvailable $mode
+        Invoke-OptionalWslInitialization $mode
         Write-Compose $cfg $mode $token
         Invoke-Compose -ComposeArgs @('pull')
     } else {
@@ -998,6 +999,7 @@ function Update-Command {
     Assert-ModeAvailable $mode
     if ($mode -like 'docker-*') {
         $token = Get-Token
+        Invoke-OptionalWslInitialization $mode
         Write-Compose $cfg $mode $token
         Invoke-Compose -ComposeArgs @('pull')
     } else {
