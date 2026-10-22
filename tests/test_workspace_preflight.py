@@ -25,7 +25,7 @@ class WorkspacePreflightTests(unittest.TestCase):
     def test_utf8_manifest_path_preserves_unicode(self):
         with tempfile.TemporaryDirectory(prefix="workspace-检查-") as td:
             manifest = Path(td) / "manifest.txt"
-            manifest.write_text("ro\\t" + td + "\\n", encoding="utf-8")
+            manifest.write_text("ro\t" + td + "\n", encoding="utf-8")
             result = subprocess.run(
                 ["bash", str(SCRIPT), str(manifest)], text=True,
                 capture_output=True, timeout=15, check=False,
