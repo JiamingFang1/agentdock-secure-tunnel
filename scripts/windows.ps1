@@ -711,9 +711,40 @@ function Test-WslWorkspaceAccess($Config,[string]$Mode) {
     }
 }
 
+function Invoke-WslWorkspacePreflight($Config,[string]$Mode) {
+    if ($Mode -ne 'docker-wsl') { return }
+    $tool = Convert-ToWslPath (Join-Path $PSScriptRoot 'check-workspaces.sh')
+    $manifest = Join-Path $Runtime ('workspace-check-' + [guid]::NewGuid().ToString('N') + '.txt')
+    try {
+        $rows = @($Config.Workspaces | ForEach-Object {
+            $source = Get-DockerSource $_ $Mode
+            if ($source.Contains("`t") -or $source.Contains("`n") -or $source.Contains("`r")) {
+                Fail 'Workspace path must not contain tabs or line breaks.'
+            }
+            "$($_.Mode)`t$source"
+        })
+        [IO.File]::WriteAllLines($manifest, $rows, (New-Object Text.UTF8Encoding($false)))
+        Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 |
+            & wsl.exe --exec bash $tool
+        if ($LASTEXITCODE -ne 0) { Fail 'WSL workspace permission preflight failed.' }
+    } finally {
+        Remove-Item -LiteralPath $manifest -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-OptionalWslInitialization([string]$Mode) {
+    if ($Mode -ne 'docker-wsl') { return }
+    $hook = Join-Path $Runtime 'wsl-before-compose.sh'
+    if (-not (Test-Path -LiteralPath $hook -PathType Leaf)) { return }
+    $wslHook = Convert-ToWslPath $hook
+    Write-Host 'Running configured WSL pre-compose initialization...'
+    & wsl.exe -u root --exec bash $wslHook
+    if ($LASTEXITCODE -ne 0) { Fail 'WSL pre-compose initialization failed.' }
+}
+
 function Assert-DockerConfig($Config,[string]$Mode) {
     [void](Get-DockerRuntimeIdentity $Mode)
-    Test-WslWorkspaceAccess $Config $Mode
+    Invoke-WslWorkspacePreflight $Config $Mode
     $defaultWs = Get-Workspace $Config $Config.DefaultWorkspace
     if ($defaultWs.Mode -ne 'rw') {
         Fail "default_workspace '$($Config.DefaultWorkspace)' must use mode: rw because AgentDock secures its default directory at startup."
@@ -883,6 +914,7 @@ function Start-Command {
     $token = Get-Token
     Write-TunnelProfile $cfg $token
     if ($mode -like 'docker-*') {
+        Invoke-OptionalWslInitialization $mode
         Write-Compose $cfg $mode $token
         Invoke-Compose -ComposeArgs @('up','-d','--force-recreate')
     } else {
