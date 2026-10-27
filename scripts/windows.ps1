@@ -1002,7 +1002,16 @@ function Get-RunningDefaultWorkspace([string]$Mode) {
         }
         if ($LASTEXITCODE -ne 0) { return $null }
         foreach ($line in $lines) {
-            if ($line -match '^AGENTDOCK_DEFAULT_DIR=/home/agentdock/AgentDock/workspaces/([A-Za-z0-9._-]+)
+            if ($line -like 'AGENTDOCK_DEFAULT_DIR=/home/agentdock/AgentDock/workspaces/*') {
+                $value = [string]$line
+                return $value.Substring($value.LastIndexOf('/') + 1)
+            }
+        }
+    } catch { return $null }
+    return $null
+}
+
+function Status-Command {
     $cfg = Read-Config
     $a = 'STOPPED'
     $t = 'STOPPED'
