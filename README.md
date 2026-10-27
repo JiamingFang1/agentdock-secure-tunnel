@@ -184,13 +184,20 @@ macOS / Linux：
 ./agentdock apply
 ```
 
-## Windows 本机 Web 管理器（可选）
+## 本机 Web 管理器
 
-安装 Python 3.8+ 后执行 `agentdock-web.cmd`，或通过 `agentdock.cmd start` 自动启动管理器。
+需要 Python 3.8+。macOS / Linux 执行 `./agentdock start`、`restart` 或 `apply`，
+服务启动成功后会自动启动管理器并打开浏览器；已有管理器会复用。
+无桌面环境时可手动访问下面的地址；不希望自动打开浏览器时使用 `AGENTDOCK_NO_BROWSER=1 ./agentdock start`。
+Windows 执行 `agentdock-web.cmd`，或通过 `agentdock.cmd start` 自动启动管理器。
 浏览器访问 <http://127.0.0.1:18880/>。可查看工作区、切换默认工作区、
 执行启动/停止/重启/应用配置及读取经过脱敏的服务状态。
 该界面仅监听本机回环地址，不通过 MCP Tunnel 暴露。
 详细说明见 [Web 管理器](docs/web-manager.md)。
+
+页面分别显示服务运行状态和工作区应用结果。`已应用：是` 表示运行工作区与当前配置一致。
+升级前已经运行的 native 服务缺少启动记录时会显示“尚未验证”；执行一次 `restart` 后即可建立记录。
+仅保存工作区选择不会让运行中的服务生效，需点击“应用配置”。
 
 Windows + WSL 的工作区会在启动前检查读、写、进入权限。
 需要 SSHFS 等自定义挂载时，可自行提供本地忽略文件

@@ -19,6 +19,8 @@ $NativeErr = Join-Path $Runtime 'agentdock-native.err.log'
 $TunnelExe = Join-Path $Bin 'tunnel-client.exe'
 $AgentDockExe = Join-Path $Bin 'agentdock.exe'
 $AgentDockHome = Join-Path $Runtime 'agentdock-home'
+$NativeState = Join-Path $Runtime 'native-workspace.json'
+. (Join-Path $PSScriptRoot 'windows-native-state.ps1')
 $script:CachedConfig = $null
 $script:CachedDockerIdentity = $null
 
@@ -880,6 +882,10 @@ function Start-Native($Config,[string]$Token) {
     if (-not (Test-PidFile $NativePid)) {
         $p = Start-Process -FilePath $AgentDockExe -WindowStyle Hidden -PassThru -RedirectStandardOutput $NativeOut -RedirectStandardError $NativeErr
         Set-Content $NativePid $p.Id -Encoding ASCII
+        try { Save-NativeWorkspace $p $ws } catch {
+            Remove-Item $NativeState -Force -ErrorAction SilentlyContinue
+            Write-Warning 'Native workspace could not be recorded; status will remain unverified.'
+        }
     }
 }
 
@@ -997,22 +1003,24 @@ function Stop-Command {
             Stop-Process -Id ([int](Get-Content $NativePid -Raw).Trim()) -Force -ErrorAction SilentlyContinue
         }
     }
-    Remove-Item $NativePid -Force -ErrorAction SilentlyContinue
+    Remove-Item $NativePid,$NativeState -Force -ErrorAction SilentlyContinue
     Write-Host 'Stopped.'
 }
 
 function Get-RunningDefaultWorkspace([string]$Mode) {
     # Read the container's actual environment, not the intended config.yaml value.
     # Never display the full environment: it may contain credentials.
+    if ($Mode -eq 'native') { return (Get-NativeWorkspace (Read-Config)) }
     if ($Mode -notlike 'docker-*') { return 'UNKNOWN' }
     try {
-        $format = '{{range .Config.Env}}{{println .}}{{end}}'
+        $format = '{{.State.Running}}{{println}}{{range .Config.Env}}{{println .}}{{end}}'
         if ($Mode -eq 'docker-wsl') {
             $output = & wsl.exe -u root --exec docker inspect agentdock-secure-tunnel --format $format 2>$null
         } else {
             $output = & docker inspect agentdock-secure-tunnel --format $format 2>$null
         }
         if ($LASTEXITCODE -ne 0) { return 'UNAVAILABLE' }
+        if (@($output).Count -eq 0 -or ([string]$output[0]).Trim() -ne 'true') { return 'UNAVAILABLE' }
         $entry = @($output | Where-Object { $_ -match '^AGENTDOCK_DEFAULT_DIR=' } | Select-Object -First 1)
         if ($entry.Count -eq 0) { return 'UNKNOWN' }
         $value = ([string]$entry[0]).Substring('AGENTDOCK_DEFAULT_DIR='.Length).Trim()
@@ -1061,11 +1069,9 @@ function Apply-Command {
     Start-Command
     $cfg = Read-Config
     $mode = Get-InstalledMode
-    if ($mode -like 'docker-*') {
-        $running = Get-RunningDefaultWorkspace $mode
-        if ($running -ne $cfg.DefaultWorkspace) {
-            Fail "Configuration not applied: expected '$($cfg.DefaultWorkspace)', running '$running'."
-        }
+    $running = Get-RunningDefaultWorkspace $mode
+    if ($running -ne $cfg.DefaultWorkspace) {
+        Fail "Configuration not applied: expected '$($cfg.DefaultWorkspace)', running '$running'."
     }
 }
 

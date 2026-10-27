@@ -16,6 +16,7 @@ NATIVE_PID="$RUNTIME/agentdock-native.pid"
 TUNNEL_LOG="$RUNTIME/tunnel-client.log"
 NATIVE_LOG="$RUNTIME/agentdock-native.log"
 NATIVE_HOME="$RUNTIME/agentdock-home"
+NATIVE_STATE="$RUNTIME/native-workspace.json"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -244,6 +245,12 @@ start_native() {
   if ! pid_alive "$NATIVE_PID"; then
     AGENTDOCK_HOST=127.0.0.1 AGENTDOCK_PORT="$PORT" AGENTDOCK_HOME="$NATIVE_HOME" AGENTDOCK_DEFAULT_DIR="$default_path" AGENTDOCK_AUTH_TOKEN="$token" AGENTDOCK_OAUTH_ENABLED=false \
       nohup "$BIN_DIR/agentdock" >> "$NATIVE_LOG" 2>&1 </dev/null & echo $! > "$NATIVE_PID"
+    wait_agentdock
+    # Write only for a newly launched process; start must not relabel an old one.
+    if ! python3 "$ROOT_DIR/scripts/native-state.py" record "$NATIVE_STATE" "$(cat "$NATIVE_PID")" "$DEFAULT_WORKSPACE" "$default_path"; then
+      rm -f "$NATIVE_STATE"
+      echo "WARNING: native workspace could not be recorded; status will remain unverified." >&2
+    fi
   fi
 }
 
@@ -257,7 +264,7 @@ start_tunnel() {
 }
 
 wait_agentdock() {
-  for _ in $(seq 1 50); do curl -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && return 0; sleep .5; done
+  for _ in $(seq 1 50); do curl --noproxy '*' -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && return 0; sleep .5; done
   fail "AgentDock health check failed"
 }
 
@@ -284,7 +291,10 @@ start_cmd() {
   mode="$(cat "$MODE_FILE")"; token="$(get_token)"; write_profile
   if [ "$mode" = docker ]; then write_compose "$token"; docker compose -f "$COMPOSE" up -d --force-recreate; else start_native "$token"; fi
   wait_agentdock; start_tunnel "$token"
-  echo "AgentDock : RUNNING"; echo "Tunnel    : RUNNING"; echo "Mode      : $mode"; echo "Default   : $DEFAULT_WORKSPACE -> /home/agentdock/AgentDock/workspaces/$DEFAULT_WORKSPACE"; echo "MCP       : http://127.0.0.1:${PORT}/mcp"
+  status_cmd
+  if ! python3 "$ROOT_DIR/scripts/manage.py" --ensure-running; then
+    echo "WARNING: Web Manager unavailable. AgentDock services remain running." >&2
+  fi
 }
 
 stop_cmd() {
@@ -296,16 +306,41 @@ stop_cmd() {
     if [ "$mode" = docker ] && [ -f "$COMPOSE" ] && command -v docker >/dev/null 2>&1; then docker compose -f "$COMPOSE" down; fi
     if [ "$mode" = native ] && pid_alive "$NATIVE_PID"; then kill "$(cat "$NATIVE_PID")" 2>/dev/null || true; fi
   fi
-  rm -f "$NATIVE_PID"; echo "Stopped."
+  rm -f "$NATIVE_PID" "$NATIVE_STATE"; echo "Stopped."
+}
+
+running_workspace() {
+  local mode="$1" output value
+  if [ "$mode" = docker ]; then
+    # Keep the credential-bearing environment private; print only the workspace.
+    output="$(docker inspect agentdock-secure-tunnel --format '{{.State.Running}}{{println}}{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)" || { echo UNAVAILABLE; return; }
+    [ "${output%%$'\n'*}" = true ] || { echo UNAVAILABLE; return; }
+    value="$(printf '%s\n' "$output" | sed -n 's/^AGENTDOCK_DEFAULT_DIR=//p' | head -n 1)"
+    case "$value" in
+      /home/agentdock/AgentDock/workspaces/*) printf '%s\n' "${value#/home/agentdock/AgentDock/workspaces/}" ;;
+      '') echo UNKNOWN ;;
+      *) echo CUSTOM ;;
+    esac
+  elif [ "$mode" = native ] && pid_alive "$NATIVE_PID"; then
+    python3 "$ROOT_DIR/scripts/native-state.py" running "$NATIVE_STATE" "$(cat "$NATIVE_PID")" <<< "$WORKSPACES" || echo UNKNOWN
+  else
+    echo UNKNOWN
+  fi
 }
 
 status_cmd() {
   load_config
-  local a=STOPPED t=STOPPED mode
-  curl -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && a=RUNNING || true
+  local a=STOPPED t=STOPPED mode running=STOPPED applied=NO
+  curl --noproxy '*' -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && a=RUNNING || true
   pid_alive "$TUNNEL_PID" && t=RUNNING || true
   mode="$(cat "$MODE_FILE" 2>/dev/null || echo 'NOT INSTALLED')"
   echo "AgentDock : $a"; echo "Tunnel    : $t"; echo "Mode      : $mode"; echo "Default   : $DEFAULT_WORKSPACE"; echo "MCP       : http://127.0.0.1:${PORT}/mcp"
+  if [ "$a" = RUNNING ]; then running="$(running_workspace "$mode")"; fi
+  if [ "$running" = "$DEFAULT_WORKSPACE" ]; then applied=YES
+  elif [ "$running" = UNKNOWN ] || [ "$running" = UNAVAILABLE ]; then applied=UNKNOWN; fi
+  echo "Default (Configured) : $DEFAULT_WORKSPACE"
+  echo "Default (Running)    : $running"
+  echo "Config Applied       : $applied"
 }
 
 logs_cmd() {

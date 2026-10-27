@@ -54,6 +54,22 @@ class HTTPManagerTests(unittest.TestCase):
         status, _, _ = self.request("GET", "/api/state")
         self.assertEqual(status, 403)
 
+    def test_readiness_is_instance_specific_and_contains_no_configuration(self):
+        status, _, body = self.request("GET", "/healthz")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"service": "agentdock-web-manager", "instance": self.module.manager_id()})
+
+    def test_state_includes_verified_workspace_and_service_health(self):
+        _, headers, _ = self.request("GET", "/")
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        evidence = {"agentdock": "RUNNING", "tunnel": "RUNNING", "running_workspace": "alpha", "config_applied": "YES"}
+        with patch.object(self.module, "execute", return_value=evidence):
+            status, _, body = self.request("GET", "/api/state", headers={"Cookie": cookie})
+        state = json.loads(body)
+        self.assertEqual(status, 200)
+        for key, value in evidence.items():
+            self.assertEqual(state[key], value)
+
     def test_cookie_only_from_homepage_and_state_is_sanitized(self):
         status, headers, _ = self.request("GET", "/")
         self.assertEqual(status, 200)

@@ -15,7 +15,10 @@ async function request(path, value) {
 }
 async function refresh() {
   const state = await request("/api/state");
-  applied.textContent = `配置工作区：${state.default_workspace} ｜ 运行工作区：${state.running_workspace} ｜ 已应用：${state.config_applied}`;
+  const health = {RUNNING:"运行中", STOPPED:"已停止", UNKNOWN:"无法确认"};
+  const workspace = {UNKNOWN:"无法确认（旧版 native 服务请重启一次）", STOPPED:"服务已停止", UNAVAILABLE:"无法读取运行状态", CUSTOM:"与当前工作区配置不匹配"};
+  const verification = {YES:"是", NO:"否", UNKNOWN:"尚未验证"};
+  applied.textContent = `AgentDock：${health[state.agentdock] || "无法确认"} ｜ Tunnel：${health[state.tunnel] || "无法确认"} ｜ 配置工作区：${state.default_workspace} ｜ 运行工作区：${workspace[state.running_workspace] || state.running_workspace} ｜ 已应用：${verification[state.config_applied] || "尚未验证"}`;
   chooser.replaceChildren();
   for (const w of state.workspaces) {
     const option = document.createElement("option");

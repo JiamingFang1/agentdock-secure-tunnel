@@ -7,6 +7,7 @@ filesystem browsing, or a generic command execution endpoint.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import os
@@ -15,8 +16,11 @@ import re
 import secrets
 import subprocess
 import sys
+import time
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
+from urllib.request import build_opener, ProxyHandler
 
 ROOT = Path(__file__).resolve().parents[1]
 UI = Path(__file__).resolve().parent / "manager"
@@ -24,6 +28,49 @@ ALLOWED = frozenset(("start", "stop", "restart", "apply", "status"))
 MAX_BODY = 4096
 PORT = 18880
 SESSION = secrets.token_urlsafe(32)
+MANAGER_URL = "http://127.0.0.1:18880/"
+
+
+def manager_id():
+    return hashlib.sha256(str(ROOT.resolve()).encode("utf-8")).hexdigest()
+
+
+def manager_ready():
+    try:
+        # Never inherit a proxy for a local readiness check.
+        with build_opener(ProxyHandler({})).open(MANAGER_URL + "healthz", timeout=.5) as response:
+            return json.load(response) == {"service": "agentdock-web-manager", "instance": manager_id()}
+    except (OSError, ValueError):
+        return False
+
+
+def ensure_running(open_browser=True):
+    if not manager_ready():
+        runtime = ROOT / ".runtime"
+        runtime.mkdir(exist_ok=True)
+        with (runtime / "web-manager.out.log").open("ab") as out, \
+             (runtime / "web-manager.err.log").open("ab") as err:
+            child = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve())], cwd=str(ROOT),
+                stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                start_new_session=True,
+            )
+        (runtime / "web-manager.pid").write_text(str(child.pid), encoding="ascii")
+        for _ in range(50):
+            if manager_ready():
+                break
+            if child.poll() is not None:
+                raise RuntimeError("Web Manager did not start; check port 18880 and .runtime/web-manager.err.log")
+            time.sleep(.1)
+        else:
+            raise RuntimeError("Web Manager readiness timed out")
+    print("Web Manager : " + MANAGER_URL, flush=True)
+    if open_browser:
+        try:
+            if not webbrowser.open(MANAGER_URL):
+                print("Browser unavailable; open the Web Manager URL manually.", file=sys.stderr)
+        except webbrowser.Error:
+            print("Browser unavailable; open the Web Manager URL manually.", file=sys.stderr)
 
 
 def list_workspaces(config_text):
@@ -104,6 +151,7 @@ def execute(command):
     result = subprocess.run(
         arguments, cwd=str(ROOT), capture_output=True, text=True, errors="replace",
         stdin=subprocess.DEVNULL, timeout=120, check=False,
+        env={**os.environ, "AGENTDOCK_NO_BROWSER": "1"},
     )
     # Never return potentially sensitive command output through the Web API.
     summary = {"ok": result.returncode == 0, "exit_code": result.returncode}
@@ -167,6 +215,8 @@ class Manager(BaseHTTPRequestHandler):
             return False
 
     def do_GET(self):
+        if self.path == "/healthz":
+            return self._send(200, {"service": "agentdock-web-manager", "instance": manager_id()})
         if self.path == "/":
             self._send(200, (UI / "index.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path in ("/app.js", "/style.css"):
@@ -183,6 +233,9 @@ class Manager(BaseHTTPRequestHandler):
                     status = {}
                 self._send(200, {"workspaces": list_workspaces(text),
                                  "default_workspace": get_selected_workspace(text),
+                                 "agentdock": status.get("agentdock", "UNKNOWN"),
+                                 "tunnel": status.get("tunnel", "UNKNOWN"),
+                                 "control_plane": status.get("control_plane", "UNKNOWN"),
                                  "running_workspace": status.get("running_workspace", "UNKNOWN"),
                                  "config_applied": status.get("config_applied", "UNKNOWN")})
             except (OSError, UnicodeError):
@@ -222,9 +275,19 @@ class Manager(BaseHTTPRequestHandler):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=PORT)
+    p.add_argument("--ensure-running", action="store_true",
+                   help="reuse or start a background manager, then open its page")
+    p.add_argument("--no-browser", action="store_true")
     args = p.parse_args()
     if args.port != PORT:
         p.error("management port is fixed to 18880 for origin enforcement")
+    if args.ensure_running:
+        try:
+            ensure_running(open_browser=not args.no_browser and os.environ.get("AGENTDOCK_NO_BROWSER") != "1")
+        except (OSError, RuntimeError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        return 0
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Manager)
     print("AgentDock Web Manager: http://127.0.0.1:18880/", flush=True)
     try:
@@ -236,4 +299,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -16,6 +16,55 @@ def load_manager():
 
 
 class ManagerTests(unittest.TestCase):
+    def test_workspace_verification_and_browser_suppression(self):
+        module = load_manager()
+        from unittest.mock import patch
+        from subprocess import CompletedProcess
+        output = "Default (Configured) : alpha\nDefault (Running) : alpha\nConfig Applied : YES\n"
+        with patch.object(module.subprocess, "run", return_value=CompletedProcess([], 0, output, "")) as run:
+            self.assertTrue(module.execute("apply")["ok"])
+            self.assertEqual(run.call_args.kwargs["env"]["AGENTDOCK_NO_BROWSER"], "1")
+        with patch.object(module.subprocess, "run", return_value=CompletedProcess([], 0, output.replace("YES", "NO"), "")):
+            self.assertFalse(module.execute("apply")["ok"])
+
+    def test_manager_ensure_reuses_server_and_opens_only_when_requested(self):
+        module = load_manager()
+        from unittest.mock import patch
+        with patch.object(module, "manager_ready", return_value=True), \
+             patch.object(module.subprocess, "Popen") as launch, \
+             patch.object(module.webbrowser, "open") as browser:
+            module.ensure_running(open_browser=True)
+            launch.assert_not_called()
+            browser.assert_called_once_with("http://127.0.0.1:18880/")
+            browser.reset_mock()
+            module.ensure_running(open_browser=False)
+            browser.assert_not_called()
+
+    def test_manager_waits_for_readiness_before_opening(self):
+        module = load_manager()
+        from unittest.mock import patch, Mock
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(module, "ROOT", pathlib.Path(td)), \
+             patch.object(module, "manager_ready", side_effect=[False, False, True]), \
+             patch.object(module.subprocess, "Popen", return_value=Mock(pid=123, poll=Mock(return_value=None))) as launch, \
+             patch.object(module.time, "sleep"), \
+             patch.object(module.webbrowser, "open") as browser:
+            module.ensure_running()
+            self.assertTrue(launch.call_args.kwargs["start_new_session"])
+            browser.assert_called_once()
+
+    def test_failed_or_foreign_listener_does_not_open_browser(self):
+        module = load_manager()
+        from unittest.mock import patch, Mock
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(module, "ROOT", pathlib.Path(td)), \
+             patch.object(module, "manager_ready", return_value=False), \
+             patch.object(module.subprocess, "Popen", return_value=Mock(pid=123, poll=Mock(return_value=1))), \
+             patch.object(module.webbrowser, "open") as browser:
+            with self.assertRaises(RuntimeError):
+                module.ensure_running()
+            browser.assert_not_called()
+
     def test_action_allowlist(self):
         module = load_manager()
         self.assertNotIn("logs", module.ALLOWED)
