@@ -2,6 +2,7 @@
 const output = document.querySelector("#result");
 const chooser = document.querySelector("#workspace");
 const buttons = [...document.querySelectorAll("button")];
+const applied = document.querySelector("#workspace-status");
 async function request(path, value) {
   const init = value === undefined ? {credentials:"same-origin"} : {
     method:"POST", headers:{"Content-Type":"application/json"},
@@ -14,6 +15,7 @@ async function request(path, value) {
 }
 async function refresh() {
   const state = await request("/api/state");
+  applied.textContent = `配置工作区：${state.default_workspace} ｜ 运行工作区：${state.running_workspace} ｜ 已应用：${state.config_applied}`;
   chooser.replaceChildren();
   for (const w of state.workspaces) {
     const option = document.createElement("option");
@@ -26,7 +28,7 @@ async function refresh() {
 }
 async function run(task) {
   buttons.forEach(b => b.disabled = true);
-  try { output.textContent = JSON.stringify(await task(), null, 2); await refresh(); }
+  try { const result = await task(); output.textContent = JSON.stringify(result, null, 2); await refresh(); }
   catch (error) { output.textContent = "失败：" + error.message; }
   finally { buttons.forEach(b => b.disabled = false); }
 }
