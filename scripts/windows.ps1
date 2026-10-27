@@ -985,6 +985,29 @@ function Stop-Command {
     Write-Host 'Stopped.'
 }
 
+function Get-RunningDefaultWorkspace([string]$Mode) {
+    # Read the container's actual environment, not the intended config.yaml value.
+    # Never display the full environment: it may contain credentials.
+    if ($Mode -notlike 'docker-*') { return 'UNKNOWN' }
+    try {
+        $format = '{{range .Config.Env}}{{println .}}{{end}}'
+        if ($Mode -eq 'docker-wsl') {
+            $output = & wsl.exe -u root --exec docker inspect agentdock-secure-tunnel --format $format 2>$null
+        } else {
+            $output = & docker inspect agentdock-secure-tunnel --format $format 2>$null
+        }
+        if ($LASTEXITCODE -ne 0) { return 'UNAVAILABLE' }
+        $entry = @($output | Where-Object { $_ -match '^AGENTDOCK_DEFAULT_DIR=' } | Select-Object -First 1)
+        if ($entry.Count -eq 0) { return 'UNKNOWN' }
+        $value = ([string]$entry[0]).Substring('AGENTDOCK_DEFAULT_DIR='.Length).Trim()
+        $prefix = '/home/agentdock/AgentDock/workspaces/'
+        if ($value.StartsWith($prefix, [StringComparison]::Ordinal)) {
+            return $value.Substring($prefix.Length)
+        }
+        return 'CUSTOM'
+    } catch { return 'UNAVAILABLE' }
+}
+
 function Status-Command {
     $cfg = Read-Config
     $a = 'STOPPED'
@@ -997,7 +1020,11 @@ function Status-Command {
     Write-Host "AgentDock : $a"
     Write-Host "Tunnel    : $t"
     Write-Host "Mode      : $mode"
-    Write-Host "Default   : $($cfg.DefaultWorkspace)"
+    $running = if ($a -eq 'RUNNING') { Get-RunningDefaultWorkspace $mode } else { 'STOPPED' }
+    $applied = if ($running -eq $cfg.DefaultWorkspace) { 'YES' } elseif ($running -in @('UNAVAILABLE','UNKNOWN')) { 'UNKNOWN' } else { 'NO' }
+    Write-Host "Default (Configured) : $($cfg.DefaultWorkspace)"
+    Write-Host "Default (Running)    : $running"
+    Write-Host "Config Applied       : $applied"
     Write-Host "MCP       : http://127.0.0.1:$($cfg.Port)/mcp"
 }
 
@@ -1016,6 +1043,14 @@ function Apply-Command {
     Test-StartPreflight
     Stop-Command
     Start-Command
+    $cfg = Read-Config
+    $mode = Get-InstalledMode
+    if ($mode -like 'docker-*') {
+        $running = Get-RunningDefaultWorkspace $mode
+        if ($running -ne $cfg.DefaultWorkspace) {
+            Fail "Configuration not applied: expected '$($cfg.DefaultWorkspace)', running '$running'."
+        }
+    }
 }
 
 function Update-Command {
