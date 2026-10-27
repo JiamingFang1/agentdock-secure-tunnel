@@ -114,6 +114,20 @@ def execute(command):
             pattern = r"(?m)^" + re.escape(label) + r"\s*:\s*(RUNNING|STOPPED|CONNECTED|UNVERIFIED)\s*$"
             found = re.search(pattern, result.stdout)
             summary[key] = found.group(1) if found else "UNKNOWN"
+        for label, key in (("Default (Configured)", "configured_workspace"),
+                           ("Default (Running)", "running_workspace"),
+                           ("Config Applied", "config_applied")):
+            pattern = r"(?m)^" + re.escape(label) + r"\s*:\s*([A-Za-z0-9._-]+)\s*$"
+            found = re.search(pattern, result.stdout)
+            summary[key] = found.group(1) if found else "UNKNOWN"
+    elif command in ("start", "restart", "apply") and summary["ok"]:
+        # Only report success after checking the actual running configuration.
+        status = execute("status")
+        summary.update({k: status.get(k, "UNKNOWN") for k in
+                        ("configured_workspace", "running_workspace", "config_applied")})
+        if status.get("config_applied") != "YES":
+            summary["ok"] = False
+            summary["error"] = "running workspace could not be verified"
     return summary
 
 
@@ -163,8 +177,14 @@ class Manager(BaseHTTPRequestHandler):
                 return self._send(403, {"error": "unauthorized"})
             try:
                 text = read_config()
+                try:
+                    status = execute("status")
+                except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                    status = {}
                 self._send(200, {"workspaces": list_workspaces(text),
-                                 "default_workspace": get_selected_workspace(text)})
+                                 "default_workspace": get_selected_workspace(text),
+                                 "running_workspace": status.get("running_workspace", "UNKNOWN"),
+                                 "config_applied": status.get("config_applied", "UNKNOWN")})
             except (OSError, UnicodeError):
                 self._send(503, {"error": "configuration unavailable"})
         else:
