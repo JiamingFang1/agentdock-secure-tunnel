@@ -181,7 +181,12 @@ class Manager(BaseHTTPRequestHandler):
                 return self._send(403, {"error": "unauthorized"})
             try:
                 text = read_config()
-                status = execute("status")
+                try:
+                    status = execute("status")
+                except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                    status = {"configured_workspace": get_selected_workspace(text),
+                              "running_workspace": "UNKNOWN",
+                              "config_applied": "UNVERIFIED"}
                 self._send(200, {"workspaces": list_workspaces(text),
                                  "default_workspace": get_selected_workspace(text),
                                  "configured_workspace": status["configured_workspace"],
