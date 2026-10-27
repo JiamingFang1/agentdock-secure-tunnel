@@ -2,5 +2,5 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AgentDock 管理</title><link rel="stylesheet" href="/style.css"></head>
 <body><main><h1>AgentDock Secure Tunnel</h1><p>本机控制台 · 127.0.0.1:18880</p>
 <section><h2>服务操作</h2><div id="actions"><button data-action="status">检查状态</button><button data-action="start">启动</button><button data-action="stop">停止</button><button data-action="restart">重启</button><button data-action="apply">应用配置</button></div></section>
-<section><h2>默认工作区</h2><label for="workspace">当前工作区</label><select id="workspace"></select><button id="save">保存选择</button><p>切换后需要点击“应用配置”才能让运行中的服务生效。</p></section>
+<section><h2>默认工作区</h2><label for="workspace">当前工作区</label><select id="workspace"></select><button id="save">保存选择</button><p id="workspace-status" role="status">正在检查实际运行工作区…</p><p>切换后需要点击“应用配置”才能让运行中的服务生效。</p></section>
 <output id="result" role="status" aria-live="polite">就绪</output></main><script defer src="/app.js"></script></body></html>
