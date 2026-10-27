@@ -107,13 +107,31 @@ def execute(command):
     )
     # Never return potentially sensitive command output through the Web API.
     summary = {"ok": result.returncode == 0, "exit_code": result.returncode}
-    if command == "status":
-        for label, key in (("AgentDock", "agentdock"),
-                           ("Tunnel", "tunnel"),
-                           ("Control Plane", "control_plane")):
-            pattern = r"(?m)^" + re.escape(label) + r"\s*:\s*(RUNNING|STOPPED|CONNECTED|UNVERIFIED)\s*$"
-            found = re.search(pattern, result.stdout)
-            summary[key] = found.group(1) if found else "UNKNOWN"
+    for label, key in (("AgentDock", "agentdock"),
+                       ("Tunnel", "tunnel"),
+                       ("Control Plane", "control_plane")):
+        pattern = r"(?m)^" + re.escape(label) + r"\s*:\s*(RUNNING|STOPPED|CONNECTED|UNVERIFIED)\s*$"
+        found = re.search(pattern, result.stdout)
+        if found:
+            summary[key] = found.group(1)
+        elif command == "status":
+            summary[key] = "UNKNOWN"
+    for label, key in (("Default (Configured)", "configured_workspace"),
+                       ("Default (Running)", "running_workspace"),
+                       ("Config Applied", "config_applied")):
+        found = re.search(r"(?m)^" + re.escape(label) + r"\s*:\s*([A-Za-z0-9._-]+)\s*$", result.stdout)
+        if found:
+            summary[key] = found.group(1)
+        elif command == "status":
+            summary[key] = "UNVERIFIED" if key == "config_applied" else "UNKNOWN"
+    if command in ("start", "restart", "apply") and summary["ok"]:
+        # Verify running state separately instead of trusting a successful process exit.
+        verified = execute("status")
+        summary.update({key: verified[key] for key in
+                        ("configured_workspace", "running_workspace", "config_applied")})
+        if summary["config_applied"] != "YES":
+            summary["ok"] = False
+            summary["error"] = "running workspace differs from configuration or could not be verified"
     return summary
 
 
@@ -163,8 +181,12 @@ class Manager(BaseHTTPRequestHandler):
                 return self._send(403, {"error": "unauthorized"})
             try:
                 text = read_config()
+                status = execute("status")
                 self._send(200, {"workspaces": list_workspaces(text),
-                                 "default_workspace": get_selected_workspace(text)})
+                                 "default_workspace": get_selected_workspace(text),
+                                 "configured_workspace": status["configured_workspace"],
+                                 "running_workspace": status["running_workspace"],
+                                 "config_applied": status["config_applied"]})
             except (OSError, UnicodeError):
                 self._send(503, {"error": "configuration unavailable"})
         else:
