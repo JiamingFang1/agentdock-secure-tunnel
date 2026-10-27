@@ -17,7 +17,17 @@ This script is executed with **WSL root privileges** during startup and apply.
 Treat it as privileged configuration: restrict write access, keep credentials
 out of it, and never run an untrusted script. It is *not* committed to GitHub.
 
-The script should fail nonzero if a required mount is missing; a successful
-return allows startup to proceed to the workspace access preflight.
+The local hook has a 20-second execution limit. If it fails or times out,
+startup continues to bounded per-workspace access checks; it cannot block
+the entire service indefinitely. A missing, disconnected, or unresponsive
+**non-default** workspace is reported as a warning and omitted from the generated
+Docker Compose mounts for that run. The **default** workspace must still
+be accessible and writable, otherwise startup fails clearly.
+
+After restoring an optional SSHFS mount, run `agentdock.cmd apply` to
+revalidate workspaces and include it in the container. An already-running
+container will not gain the skipped mount automatically.
+
 The mount's actual remote connectivity and read/write permission should be
-tested independently before assuming a service is ready.
+tested independently before assuming a workspace is ready. Avoid multiple
+simultaneous start/apply requests while diagnosing failed SSHFS mounts.

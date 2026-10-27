@@ -23,6 +23,24 @@ class WslWorkspaceDispatchTests(unittest.TestCase):
         self.assertIn("Test-WslWorkspaceAccess $Config $Mode", statements)
         self.assertNotIn(r"\n", match.group("body"))
 
+    def test_sshfs_checks_are_bounded_and_optional_workspace_is_skipped(self):
+        probes = SOURCE.split("function Test-WslCondition", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("'timeout','-k','2s','5s','test'", probes)
+        workspace = SOURCE.split("function Test-WslWorkspaceAccess", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("$ws.Name -eq $Config.DefaultWorkspace", workspace)
+        self.assertIn("Skipping unavailable optional workspace", workspace)
+        self.assertIn("$script:AvailableWorkspaces", workspace)
+
+    def test_compose_only_mounts_available_workspaces_in_wsl(self):
+        compose = SOURCE.split("function Write-Compose", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("$script:AvailableWorkspaces", compose)
+        self.assertIn("foreach ($ws in $workspaceMounts)", compose)
+
+    def test_custom_mount_hook_has_timeout_and_warns_on_failure(self):
+        hook = SOURCE.split("function Invoke-OptionalWslInitialization", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("timeout -k 3s 20s bash $wslHook", hook)
+        self.assertIn("Write-Warning", hook)
+
     def test_ro_and_rw_access_are_checked(self):
         section = SOURCE.split("function Test-WslWorkspaceAccess", 1)[1].split("\nfunction ", 1)[0]
         self.assertIn("Test-WslCondition '-r' $source", section)
