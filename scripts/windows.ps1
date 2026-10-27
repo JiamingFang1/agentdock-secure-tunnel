@@ -705,19 +705,30 @@ function Get-DockerSource($Ws,[string]$Mode) {
 }
 
 function Test-WslCondition([string]$Flag,[string]$Path) {
-    return ((Invoke-WslExitCode -WslArgs @('--exec','test',$Flag,$Path)) -eq 0)
+    # A stale SSHFS mount can block even a simple POSIX test indefinitely.
+    # Bound every probe inside WSL rather than trusting the Windows process timeout.
+    return ((Invoke-WslExitCode -WslArgs @('--exec','timeout','-k','2s','5s','test',$Flag,$Path)) -eq 0)
 }
 
 function Test-WslWorkspaceAccess($Config,[string]$Mode) {
     if ($Mode -ne 'docker-wsl') { return }
+    $available = New-Object System.Collections.Generic.List[object]
     foreach ($ws in $Config.Workspaces) {
         $source = Get-DockerSource $ws $Mode
-        if (-not (Test-WslCondition '-r' $source)) { Fail "WSL user cannot read workspace '$($ws.Name)': $source" }
-        if (-not (Test-WslCondition '-x' $source)) { Fail "WSL user cannot enter workspace '$($ws.Name)': $source" }
-        if ($ws.Mode -eq 'rw' -and -not (Test-WslCondition '-w' $source)) {
-            Fail "WSL user cannot write workspace '$($ws.Name)' configured as rw: $source"
+        $readable = Test-WslCondition '-r' $source
+        $accessible = if ($readable) { Test-WslCondition '-x' $source } else { $false }
+        $writable = if ($accessible -and $ws.Mode -eq 'rw') { Test-WslCondition '-w' $source } else { $true }
+        if (-not ($readable -and $accessible -and $writable)) {
+            if ($ws.Name -eq $Config.DefaultWorkspace) {
+                Fail "Default workspace '$($ws.Name)' is inaccessible or timed out in WSL: $source"
+            }
+            Write-Warning "Skipping unavailable optional workspace '$($ws.Name)' (will not mount in Docker): $source"
+            continue
         }
+        $available.Add($ws)
     }
+    # Recompute on each preflight to allow recovered mounts on the next apply.
+    $script:AvailableWorkspaces = @($available.ToArray())
 }
 
 function Invoke-WslWorkspacePreflight($Config,[string]$Mode) {
@@ -746,9 +757,13 @@ function Invoke-OptionalWslInitialization([string]$Mode) {
     $hook = Join-Path $Runtime 'wsl-before-compose.sh'
     if (-not (Test-Path -LiteralPath $hook -PathType Leaf)) { return }
     $wslHook = Convert-ToWslPath $hook
-    Write-Host 'Running configured WSL pre-compose initialization...'
-    & wsl.exe -u root --exec bash $wslHook
-    if ($LASTEXITCODE -ne 0) { Fail 'WSL pre-compose initialization failed.' }
+    Write-Host 'Running configured WSL pre-compose initialization (bounded to 20s)...'
+    # The hook is user-supplied; it may block forever on mountpoint(1)/SSHFS.
+    # Non-default workspace failures must not prevent the service from starting.
+    & wsl.exe -u root --exec timeout -k 3s 20s bash $wslHook
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "WSL pre-compose initialization failed or timed out (exit $LASTEXITCODE). Proceeding to bounded workspace checks."
+    }
 }
 
 function Assert-DockerConfig($Config,[string]$Mode) {
@@ -801,7 +816,8 @@ function Write-Compose($Config,[string]$Mode,[string]$Token) {
     $lines.Add('      - agentdock_home:/home/agentdock/.agentdock')
     $lines.Add('      - agentdock_root:/home/agentdock/AgentDock')
 
-    foreach ($ws in $Config.Workspaces) {
+    $workspaceMounts = if ($Mode -eq 'docker-wsl') { $script:AvailableWorkspaces } else { $Config.Workspaces }
+    foreach ($ws in $workspaceMounts) {
         $source = (Get-DockerSource $ws $Mode).Replace("'","''")
         $lines.Add("      - '$source`:$safeRoot/workspaces/$($ws.Name):$($ws.Mode)'")
     }
