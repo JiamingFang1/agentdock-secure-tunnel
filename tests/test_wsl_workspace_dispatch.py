@@ -36,6 +36,17 @@ class WslWorkspaceDispatchTests(unittest.TestCase):
         self.assertIn("$script:AvailableWorkspaces", compose)
         self.assertIn("foreach ($ws in $workspaceMounts)", compose)
 
+    def test_final_compose_uses_validated_workspace_mounts(self):
+        normalize = SOURCE.split("function Get-WslEffectiveComposeFile", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("Get-WslComposeConfig $baseArgs", normalize)
+        self.assertIn("Get-WslComposeConfig $localArgs", normalize)
+        self.assertIn('$root = \'/home/agentdock/AgentDock/workspaces/\'', normalize)
+        self.assertIn("$merged.services.agentdock.volumes = @($kept) + @($managed)", normalize)
+        self.assertIn("compose.effective.json", normalize)
+        dispatch = SOURCE.split("function Invoke-Compose", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("Get-WslEffectiveComposeFile $override", dispatch)
+        self.assertIn("$files = @('-f', $resolved)", dispatch)
+
     def test_custom_mount_hook_has_timeout_and_warns_on_failure(self):
         hook = SOURCE.split("function Invoke-OptionalWslInitialization", 1)[1].split("\nfunction ", 1)[0]
         self.assertIn("timeout -k 3s 20s bash $wslHook", hook)

@@ -838,6 +838,48 @@ function Write-Compose($Config,[string]$Mode,[string]$Token) {
     [IO.File]::WriteAllLines($Compose,$lines,(New-Object Text.UTF8Encoding($false)))
 }
 
+function Get-WslComposeConfig([string[]]$Files) {
+    # Compose resolves overrides, relative bind paths, profiles, and extension fields.
+    # Only parsed JSON is used; never log configuration containing credentials.
+    $args = @('-u','root','--exec','docker','compose') + $Files + @('config','--format','json')
+    $output = & wsl.exe @args
+    if ($LASTEXITCODE -ne 0) { Fail 'Unable to resolve Docker Compose configuration.' }
+    try { return (($output -join "`n") | ConvertFrom-Json) }
+    catch { Fail 'Unable to parse resolved Docker Compose configuration.' }
+}
+
+function Get-WslEffectiveComposeFile([string]$Override) {
+    $baseArgs = @('-f', (Convert-ToWslPath $Compose))
+    $localArgs = $baseArgs + @('-f', (Convert-ToWslPath $Override))
+    $base = Get-WslComposeConfig $baseArgs
+    $merged = Get-WslComposeConfig $localArgs
+    if ($null -eq $base.services.agentdock -or $null -eq $merged.services.agentdock) {
+        Fail 'AgentDock service is missing from the resolved Compose configuration.'
+    }
+
+    # Workspace bind mounts are solely owned by generated config.yaml-derived compose.
+    # A stale SSHFS entry in compose.local.yaml must not reintroduce a skipped mount.
+    $root = '/home/agentdock/AgentDock/workspaces/'
+    $managed = @($base.services.agentdock.volumes | Where-Object {
+        $null -ne $_ -and $_.target -like "$root*"
+    })
+    $kept = @($merged.services.agentdock.volumes | Where-Object {
+        $null -ne $_ -and $_.target -notlike "$root*"
+    })
+    $oldCount = @($merged.services.agentdock.volumes | Where-Object {
+        $null -ne $_ -and $_.target -like "$root*"
+    }).Count
+    if ($oldCount -ne $managed.Count) {
+        Write-Warning 'Overriding local workspace mounts with validated generated mounts.'
+    }
+    $merged.services.agentdock.volumes = @($kept) + @($managed)
+    $effective = Join-Path $Runtime 'compose.effective.json'
+    # Store beside compose.yaml so file locations remain predictable. Never print contents.
+    $json = $merged | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($effective,$json,(New-Object Text.UTF8Encoding($false)))
+    return (Convert-ToWslPath $effective)
+}
+
 function Invoke-Compose([string[]]$ComposeArgs) {
     $mode = Get-InstalledMode
     $override = Join-Path $Runtime 'compose.local.yaml'
@@ -848,7 +890,8 @@ function Invoke-Compose([string[]]$ComposeArgs) {
     } elseif ($mode -eq 'docker-wsl') {
         $files = @('-f', (Convert-ToWslPath $Compose))
         if (Test-Path -LiteralPath $override -PathType Leaf) {
-            $files += @('-f', (Convert-ToWslPath $override))
+            $resolved = Get-WslEffectiveComposeFile $override
+            $files = @('-f', $resolved)
         }
         $wslArgs = @('-u','root','--exec','docker','compose') + $files + $ComposeArgs
         & wsl.exe @wslArgs

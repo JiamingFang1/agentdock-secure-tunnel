@@ -31,3 +31,19 @@ container will not gain the skipped mount automatically.
 The mount's actual remote connectivity and read/write permission should be
 tested independently before assuming a workspace is ready. Avoid multiple
 simultaneous start/apply requests while diagnosing failed SSHFS mounts.
+
+## Docker Compose local overrides
+
+`config.yaml` is the sole authority for workspace bind mounts in WSL Docker mode.
+The runtime can still load `.runtime/compose.local.yaml` for other customizations,
+but now resolves the combined Compose configuration before startup and replaces
+any `agentdock` bind mounts targeting `/home/agentdock/AgentDock/workspaces/`
+with the mounts from the validated, generated `compose.yaml`.
+This prevents a stale optional SSHFS mount in the local override from being
+reintroduced after the availability check skipped it. The original user-owned
+`compose.local.yaml` is not edited. Other custom settings are retained.
+A generated `.runtime/compose.effective.json` is only an internal runtime artifact;
+it may contain credentials and should not be shared or committed.
+
+To permanently change a workspace mount, edit the corresponding entry in
+`config.yaml`, not the Compose override. Reload with `agentdock.cmd apply`.
